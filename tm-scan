@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""
+tm-scan: Threat Modeling Scanner CLI
+A local-only threat modeling scanner for GitHub organizations.
+"""
+
+import sys
+import os
+import argparse
+import logging
+from datetime import datetime
+from pathlib import Path
+
+# Add src directory to path
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir / "src"))
+
+from src.config import Config
+from src.inventory import RepoInventory
+from src.selector import RepoSelector
+from src.cloner import RepoCloner
+from src.scanner import EvidenceScanner
+from src.gitleaks_wrapper import GitleaksWrapper
+from src.sbom_wrapper import SyftWrapper
+from src.reporter import ThreatModelReporter
+
+
+def setup_logging(config: Config) -> logging.Logger:
+    """Set up logging to file and console."""
+    logger = logging.getLogger("tm-scan")
+    logger.setLevel(logging.INFO)
+
+    # File handler
+    log_path = config.get_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter("%(levelname)s: %(message)s")
+    console_handler.setFormatter(console_formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger
+
+
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="tm-scan: Threat Modeling Scanner for GitHub Organizations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Scan repos updated in last 30 days (using GitHub token)
+  %(prog)s --org mbbgrp --since-days 30 --github-token $GITHUB_TOKEN --max-repos 20
+
+  # Or set GITHUB_TOKEN environment variable
+  export GITHUB_TOKEN=your_token_here
+  %(prog)s --org mbbgrp --since-days 30 --max-repos 20
+
+  # Scan repos from allowlist file only
+  %(prog)s --org mbbgrp --repos-file repos.txt --max-repos 10
+
+  # Apply both filters (allowlist + time)
+  %(prog)s --org mbbgrp --repos-file repos.txt --since-days 30
+
+  # Dry run (show selected repos without cloning)
+  %(prog)s --org mbbgrp --since-days 30 --dry-run
+
+  # Deep scan mode
+  %(prog)s --org mbbgrp --since-days 30 --mode deep --max-repos 5
+
+Getting a GitHub Token:
+  1. Go to https://github.com/settings/tokens
+  2. Generate a new Personal Access Token (classic)
+  3. Select 'repo' scope for private repositories
+  4. Use: --github-token YOUR_TOKEN or export GITHUB_TOKEN=YOUR_TOKEN
+        """,
+    )
+
+    parser.add_argument(
+        "--org",
+        default="mbbgrp",
+        help="GitHub organization name (default: mbbgrp)",
+    )
+    parser.add_argument(
+        "--since-days",
+        type=int,
+        default=30,
+        help="Only scan repos updated within N days (default: 30)",
+    )
+    parser.add_argument(
+        "--repos-file",
+        help="Path to allowlist file (one repo per line)",
+    )
+    parser.add_argument(
+        "--max-repos",
+        type=int,
+        default=50,
+        help="Maximum repos to scan (default: 50)",
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=1,
+        help="Git clone depth (default: 1 = shallow)",
+    )
+    parser.add_argument(
+        "--workspace-dir",
+        help="Local clone location (default: ~/tm-workspace)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Report output location (default: ~/tm-output)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["quick", "deep"],
+        default="quick",
+        help="Scan mode (default: quick)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print selected repos without cloning",
+    )
+    parser.add_argument(
+        "--no-gitleaks",
+        action="store_true",
+        help="Skip gitleaks scanning",
+    )
+    parser.add_argument(
+        "--no-sbom",
+        action="store_true",
+        help="Skip syft SBOM generation",
+    )
+    parser.add_argument(
+        "--github-token",
+        help="GitHub Personal Access Token (for API access). Alternatively set GITHUB_TOKEN or TM_GITHUB_TOKEN env var.",
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    """Main entry point."""
+    args = parse_arguments()
+
+    # Create configuration
+    config = Config(
+        org=args.org,
+        since_days=args.since_days,
+        repos_file=args.repos_file,
+        max_repos=args.max_repos,
+        depth=args.depth,
+        workspace_dir=args.workspace_dir,
+        output_dir=args.output_dir,
+        mode=args.mode,
+        dry_run=args.dry_run,
+        no_gitleaks=args.no_gitleaks,
+        no_sbom=args.no_sbom,
+        github_token=args.github_token,
+    )
+
+    # Set up logging
+    logger = setup_logging(config)
+    logger.info(f"tm-scan started for org: {config.org}")
+    logger.info(f"Run ID: {config.run_id}")
+
+    # Show authentication method being used
+    print("\n" + "="*60)
+    print("tm-scan: Threat Modeling Scanner")
+    print("="*60)
+    if config.github_token:
+        print("Authentication: GitHub API Token")
+    elif os.environ.get("GITHUB_TOKEN") or os.environ.get("TM_GITHUB_TOKEN"):
+        print("Authentication: GitHub API Token (from env var)")
+    else:
+        print("Authentication: Public API (no token) or GitHub CLI")
+        print("  For private repos, use: --github-token YOUR_TOKEN")
+        print("  Or: export GITHUB_TOKEN=your_token")
+    print("="*60)
+
+    # Save configuration
+    config.save_config()
+    logger.info(f"Configuration saved to: {config.metadata_dir / 'run-config.json'}")
+
+    # Step 1: Inventory repositories
+    print("\n[1/6] Inventorying repositories...")
+    inventory = RepoInventory(config)
+    all_repos = inventory.fetch_repos()
+    logger.info(f"Found {len(all_repos)} repositories in org {config.org}")
+    print(f"Found {len(all_repos)} repositories")
+
+    # Step 2: Filter and select repos
+    print("\n[2/6] Filtering and selecting repositories...")
+    filtered_repos = inventory.get_filtered_repos()
+    logger.info(f"Filtered to {len(filtered_repos)} repositories")
+    print(f"Filtered to {len(filtered_repos)} repositories")
+
+    selector = RepoSelector(config)
+    selected_repos = selector.select_repos(filtered_repos)
+    selector.print_selection(selected_repos)
+
+    # Save inventory and selection
+    inventory.save_inventory(all_repos)
+    skipped_repos = inventory.get_skipped_repos([r["name"] for r in selected_repos])
+    selector.save_selection(selected_repos, skipped_repos)
+    logger.info(f"Selected {len(selected_repos)} repositories for scanning")
+
+    # Dry run - exit after selection
+    if config.dry_run:
+        print("\nDry run complete. No repositories cloned.")
+        return 0
+
+    # Step 3: Clone repositories
+    print("\n[3/6] Cloning repositories...")
+    cloner = RepoCloner(config)
+    clone_results = {}
+
+    for repo in selected_repos:
+        repo_name = repo["name"]
+        success, message = cloner.clone_repo(repo_name)
+        clone_results[repo_name] = (success, message)
+        print(f"  {repo_name}: {message}")
+        logger.info(f"Clone {repo_name}: {success}")
+
+    successful_clones = [r for r, (s, _) in clone_results.items() if s]
+    logger.info(f"Successfully cloned {len(successful_clones)}/{len(selected_repos)} repositories")
+
+    if not successful_clones:
+        print("\nNo repositories successfully cloned. Exiting.")
+        return 1
+
+    # Step 4: Scan for evidence
+    print("\n[4/6] Scanning for evidence...")
+    scanner = EvidenceScanner(config)
+    evidence_results = {}
+
+    for i, repo_name in enumerate(successful_clones, 1):
+        repo_path = cloner.get_repo_path(repo_name)
+        print(f"  [{i}/{len(successful_clones)}] Scanning {repo_name}...")
+
+        evidence = scanner.scan_repo(repo_name, repo_path)
+        evidence_results[repo_name] = evidence
+
+        scanner.save_evidence(evidence, repo_name)
+        scanner.save_evidence_summary(evidence, repo_name)
+        logger.info(f"Scanned {repo_name}: {len(evidence.get('keyword_hits', []))} keyword hits")
+
+    # Step 5: Run gitleaks and syft (optional)
+    gitleaks = GitleaksWrapper(config)
+    syft = SyftWrapper(config)
+
+    if not config.no_gitleaks and gitleaks.available:
+        print("\n[5/6] Running gitleaks secret scanning...")
+    else:
+        print("\n[5/6] Skipping gitleaks (not installed or disabled)")
+        logger.info("Gitleaks not available or disabled")
+
+    if not config.no_sbom and syft.available:
+        print("        Running syft SBOM generation...")
+    else:
+        print("        Skipping syft (not installed or disabled)")
+        logger.info("Syft not available or disabled")
+
+    gitleaks_results = {}
+    sbom_results = {}
+
+    for i, repo_name in enumerate(successful_clones, 1):
+        repo_path = cloner.get_repo_path(repo_name)
+
+        # Gitleaks
+        if not config.no_gitleaks and gitleaks.available:
+            print(f"  [{i}/{len(successful_clones)}] gitleaks: {repo_name}")
+            gitleaks_summary = gitleaks.scan_repo(repo_path, repo_name)
+            gitleaks.save_summary(gitleaks_summary, repo_name)
+            gitleaks_results[repo_name] = gitleaks_summary
+            logger.info(f"Gitleaks {repo_name}: {gitleaks_summary.get('findings_count', 0)} findings")
+        else:
+            gitleaks_results[repo_name] = {"status": "skipped", "findings_count": 0}
+
+        # Syft
+        if not config.no_sbom and syft.available:
+            print(f"  [{i}/{len(successful_clones)}] syft: {repo_name}")
+            sbom_summary = syft.scan_repo(repo_path, repo_name)
+            syft.save_summary(sbom_summary, repo_name)
+            sbom_results[repo_name] = sbom_summary
+            logger.info(f"Syft {repo_name}: {sbom_summary.get('package_count', 0)} packages")
+        else:
+            sbom_results[repo_name] = {"status": "skipped", "package_count": 0}
+
+    # Step 6: Generate threat model reports
+    print("\n[6/6] Generating threat model reports...")
+    reporter = ThreatModelReporter(config)
+
+    for i, repo_name in enumerate(successful_clones, 1):
+        print(f"  [{i}/{len(successful_clones)}] {repo_name}")
+
+        evidence = evidence_results.get(repo_name, {})
+        gitleaks_summary = gitleaks_results.get(repo_name, {})
+        sbom_summary = sbom_results.get(repo_name, {})
+
+        report_content = reporter.generate_report(
+            repo_name,
+            evidence,
+            gitleaks_summary,
+            sbom_summary,
+        )
+        reporter.save_report(report_content, repo_name)
+        logger.info(f"Generated report for {repo_name}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("Scan Complete!")
+    print("=" * 60)
+    print(f"Repositories scanned: {len(successful_clones)}")
+    print(f"Reports directory: {config.output_dir / 'reports'}")
+    print(f"Log file: {config.get_log_path()}")
+    print("=" * 60)
+
+    logger.info("tm-scan completed successfully")
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n\nScan interrupted by user.")
+        sys.exit(130)
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

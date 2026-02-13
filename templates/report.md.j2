@@ -1,0 +1,26 @@
+{# Jinja2 template for threat model reports (optional - not currently used) #}
+# Threat Model Report
+
+**Repository:** {{ repo_name }}
+**Organization:** {{ org }}
+**Report Date:** {{ report_date }}
+
+## Executive Summary
+
+**Overall Risk Level:** {{ risk_level }}
+
+## Asset/Flow Inventory
+
+| Asset/Flow | Confidentiality | Integrity | Availability | Sensitivity | Evidence | Notes |
+|------------|-----------------|-----------|--------------|-------------|----------|-------|
+{% for asset in assets %}
+| {{ asset.name }} | {{ asset.confidentiality }} | {{ asset.integrity }} | {{ asset.availability }} | {{ asset.sensitivity }} | {{ asset.evidence }} | {{ asset.notes }} |
+{% endfor %}
+
+## Threat Analysis
+
+| Threat | STRIDE Category | Likelihood | Impact | Priority | Evidence | Recommended Controls | Questions to Confirm |
+|--------|-----------------|------------|--------|----------|----------|----------------------|----------------------|
+{% for threat in threats %}
+| {{ threat.name }} | {{ threat.stride_category }} | {{ threat.likelihood }} | {{ threat.impact }} | {{ threat.priority }} | {{ threat.evidence }} | {{ threat.controls }} | {{ threat.questions }} |
+{% endfor %}

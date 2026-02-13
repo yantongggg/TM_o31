@@ -1,0 +1,379 @@
+# Knowledge Base: Threat Patterns
+# STRIDE-based threat library for threat modeling
+
+threats:
+  # SPOOFING threats
+  - id: "TM-S-001"
+    name: "User Impersonation"
+    stride_category: "Spoofing"
+    description: "Attacker impersonates legitimate user to gain unauthorized access"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["login", "authenticate", "jwt", "session"]
+    recommended_controls:
+      - "Implement multi-factor authentication (MFA)"
+      - "Use strong session management with secure cookies"
+      - "Implement proper JWT validation and signature verification"
+      - "Consider adding device fingerprinting"
+    questions_to_confirm:
+      - "Is MFA implemented for sensitive operations?"
+      - "Are sessions properly invalidated on logout?"
+      - "Is JWT signature validation enforced?"
+
+  - id: "TM-S-002"
+    name: "API Endpoint Spoofing"
+    stride_category: "Spoofing"
+    description: "Attacker spoofs legitimate API endpoint to intercept requests"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["@RestController", "app.get", "openapi", "swagger"]
+    recommended_controls:
+      - "Enforce HTTPS for all API endpoints"
+      - "Implement API authentication (API keys, OAuth2)"
+      - "Use request signing for sensitive operations"
+      - "Implement CORS policies correctly"
+    questions_to_confirm:
+      - "Is HTTPS enforced for all endpoints?"
+      - "Is authentication required on all endpoints?"
+      - "Are API keys/rotated regularly?"
+
+  # TAMPERING threats
+  - id: "TM-T-001"
+    name: "PVF_DATE Manipulation"
+    stride_category: "Tampering"
+    description: "Attacker manipulates date fields to bypass transaction validation or time-based controls"
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["PVF_DATE", "date", "timestamp", "previous_review", "previous_deny", "hold_transaction"]
+    recommended_controls:
+      - "Validate dates on server-side (never trust client input)"
+      - "Use server-generated timestamps for critical operations"
+      - "Implement date range validation"
+      - "Log all date modifications with audit trail"
+    questions_to_confirm:
+      - "Is PVF_DATE validated server-side?"
+      - "Are date ranges enforced on the backend?"
+      - "Is date modification logged?"
+
+  - id: "TM-T-002"
+    name: "Risk Score Manipulation"
+    stride_category: "Tampering"
+    description: "Attacker manipulates risk_score or max_risk_score to bypass risk checks"
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["risk_score", "max_risk_score", "riskScore", "maxRiskScore"]
+    recommended_controls:
+      - "Calculate risk scores server-side only"
+      - "Encrypt risk score data in transit and at rest"
+      - "Implement integrity checks (HMAC) for risk data"
+      - "Log all risk score changes"
+    questions_to_confirm:
+      - "Is risk_score calculated on the server?"
+      - "Is risk score data integrity verified?"
+      - "Are risk score changes audited?"
+
+  - id: "TM-T-003"
+    name: "Transaction Hold Bypass"
+    stride_category: "Tampering"
+    description: "Attacker bypasses hold_transaction controls to process prohibited transactions"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["hold_transaction", "holdTransaction", "previous_review", "previousDeny"]
+    recommended_controls:
+      - "Enforce holds server-side with no client override"
+      - "Implement hold state with database constraints"
+      - "Require approval workflow for held transactions"
+      - "Log all hold bypass attempts"
+    questions_to_confirm:
+      - "Are transaction holds enforced server-side?"
+      - "Can holds be bypassed via client manipulation?"
+      - "Is hold state persisted in database?"
+
+  - id: "TM-T-004"
+    name: "Time Interval Bypass"
+    stride_category: "Tampering"
+    description: "Attacker manipulates time intervals (10m, 30m, 1h, etc.) to bypass rate limits or time-based controls"
+    default_likelihood: "Medium"
+    default_impact: "Medium"
+    keywords: ["10m", "30m", "1h", "4h", "24h", "7d", "time_interval"]
+    recommended_controls:
+      - "Use server-side time for all interval calculations"
+      - "Store interval state in database, not client"
+      - "Implement monotonic counters for rate limiting"
+      - "Use Redis or similar for distributed time tracking"
+    questions_to_confirm:
+      - "Are time intervals calculated server-side?"
+      - "Is interval state persisted?"
+      - "Can intervals be manipulated via client input?"
+
+  # REPUDIATION threats
+  - id: "TM-R-001"
+    name: "Non-Repudiation of Actions"
+    stride_category: "Repudiation"
+    description: "User denies performing action due to insufficient audit trail"
+    default_likelihood: "Medium"
+    default_impact: "Medium"
+    keywords: ["USERS", "login", "authenticate", "transaction"]
+    recommended_controls:
+      - "Implement comprehensive audit logging"
+      - "Log user ID, timestamp, action, and outcome"
+      - "Use append-only logs or WORM storage"
+      - "Include digital signatures for critical actions"
+    questions_to_confirm:
+      - "Are all user actions logged?"
+      - "Do logs include user identity and timestamp?"
+      - "Are logs protected against tampering?"
+
+  # INFORMATION DISCLOSURE threats
+  - id: "TM-I-001"
+    name: "User Data Exposure"
+    stride_category: "Information Disclosure"
+    description: "Sensitive user data from USERS table exposed through API or logs"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["USERS", "SELECT", "executeQuery", "console.log", "logger."]
+    recommended_controls:
+      - "Implement field-level access control"
+      - "Redact sensitive fields in logs"
+      - "Use parameterized queries to prevent SQL injection"
+      - "Implement data encryption at rest"
+    questions_to_confirm:
+      - "Are sensitive fields redacted in logs?"
+      - "Is database access restricted by principle of least privilege?"
+      - "Is user data encrypted at rest?"
+
+  - id: "TM-I-002"
+    name: "Database Connection String Exposure"
+    stride_category: "Information Disclosure"
+    description: "Database credentials exposed in config or connection strings"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["connectionString", "connection_string", "jdbc:", "mysql://", "postgres://", "oracle://"]
+    recommended_controls:
+      - "Use environment variables for credentials"
+      - "Implement secret management (HashiCorp Vault, AWS Secrets Manager)"
+      - "Rotate credentials regularly"
+      - "Use least privilege database accounts"
+    questions_to_confirm:
+      - "Are credentials stored in environment variables?"
+      - "Is a secret manager used?"
+      - "Are database credentials rotated?"
+
+  - id: "TM-I-003"
+    name: "Browser/OS Fingerprinting Data Exposure"
+    stride_category: "Information Disclosure"
+    description: "User agent and OS data collected without proper disclosure or consent"
+    default_likelihood: "Low"
+    default_impact: "Medium"
+    keywords: ["user-agent", "browser_type", "browser_version", "os_version", "User-Agent"]
+    recommended_controls:
+      - "Implement privacy policy disclosure"
+      - "Obtain user consent for data collection"
+      - "Minimize collected data"
+      - "Comply with GDPR/CCPA requirements"
+    questions_to_confirm:
+      - "Is fingerprinting disclosed to users?"
+      - "Is user consent obtained?"
+      - "Is data collection minimized?"
+
+  - id: "TM-I-004"
+    name: "Case Management Data Exposure"
+    stride_category: "Information Disclosure"
+    description: "Sensitive case data exposed through popup fields or UI"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["case_management", "caseManagement", "popup", "popup_fields", "popupFields"]
+    recommended_controls:
+      - "Implement field-level authorization"
+      - "Mask sensitive fields in UI"
+      - "Audit access to case data"
+      - "Implement data minimization"
+    questions_to_confirm:
+      - "Are popup fields protected by authorization?"
+      - "Is sensitive case data masked?"
+      - "Is case data access audited?"
+
+  # DENIAL OF SERVICE threats
+  - id: "TM-D-001"
+    name: "API Rate Limiting Bypass"
+    stride_category: "Denial of Service"
+    description: "Attacker bypasses rate limits to exhaust API resources"
+    default_likelihood: "Medium"
+    default_impact: "Medium"
+    keywords: ["@GetMapping", "app.post", "router.", "1h", "24h"]
+    recommended_controls:
+      - "Implement rate limiting per user/IP"
+      - "Use Redis for distributed rate limiting"
+      - "Set appropriate request timeouts"
+      - "Implement circuit breakers"
+    questions_to_confirm:
+      - "Is rate limiting implemented?"
+      - "Is rate limiting distributed?"
+      - "Are timeouts configured?"
+
+  - id: "TM-D-002"
+    name: "Resource Exhaustion via Queries"
+    stride_category: "Denial of Service"
+    description: "Attacker sends expensive queries to exhaust database resources"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["SELECT", "executeQuery", "Statement", "PreparedStatement"]
+    recommended_controls:
+      - "Implement query timeouts"
+      - "Use pagination for large result sets"
+      - "Limit query complexity"
+      - "Implement database connection pooling"
+    questions_to_confirm:
+      - "Are query timeouts configured?"
+      - "Is result pagination enforced?"
+      - "Is connection pooling used?"
+
+  # ELEVATION OF PRIVILEGE threats
+  - id: "TM-E-001"
+    name: "Privilege Escalation via RBAC Bypass"
+    stride_category: "Elevation of Privilege"
+    description: "Attacker bypasses RBAC to gain elevated permissions"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["rbac", "RBAC", "@PreAuthorize", "@Secured", "@RolesAllowed"]
+    recommended_controls:
+      - "Implement defense-in-depth authorization"
+      - "Validate permissions on every request"
+      - "Use deny-by-default approach"
+      - "Regularly audit permission assignments"
+    questions_to_confirm:
+      - "Is authorization checked on every endpoint?"
+      - "Is access deny-by-default?"
+      - "Are permission audits performed?"
+
+  - id: "TM-E-002"
+    name: "JWT Token Manipulation"
+    stride_category: "Elevation of Privilege"
+    description: "Attacker manipulates JWT token to gain elevated privileges"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["jwt", "JsonWebToken", "jsonwebtoken", "oauth"]
+    recommended_controls:
+      - "Validate JWT signature on every request"
+      - "Use short token expiration times"
+      - "Implement token refresh mechanism"
+      - "Include claims validation"
+    questions_to_confirm:
+      - "Is JWT signature validated?"
+      - "Are token expirations configured?"
+      - "Is refresh token flow implemented?"
+
+  - id: "TM-E-003"
+    name: "SQL Injection for Privilege Escalation"
+    stride_category: "Elevation of Privilege"
+    description: "Attacker uses SQL injection to bypass authentication or gain admin access"
+    default_likelihood: "Medium"
+    default_impact: "High"
+    keywords: ["SELECT", "INSERT", "UPDATE", "DELETE", "executeQuery", "Statement"]
+    recommended_controls:
+      - "Use prepared statements for all SQL queries"
+      - "Implement input validation and sanitization"
+      - "Use ORM frameworks that prevent SQLi"
+      - "Apply least privilege database accounts"
+    questions_to_confirm:
+      - "Are prepared statements used?"
+      - "Is input validation implemented?"
+      - "Are ORM frameworks used?"
+
+# Asset categories for CIA triad assessment
+assets:
+  - name: "User Database (USERS table)"
+    default_confidentiality: "High"
+    default_integrity: "High"
+    default_availability: "Medium"
+    description: "Stores user PII and credentials"
+
+  - name: "Transaction Processing System"
+    default_confidentiality: "Medium"
+    default_integrity: "High"
+    default_availability: "High"
+    description: "Processes financial transactions"
+
+  - name: "Risk Assessment Engine"
+    default_confidentiality: "Medium"
+    default_integrity: "High"
+    default_availability: "High"
+    description: "Calculates risk scores and holds"
+
+  - name: "API Gateway"
+    default_confidentiality: "Medium"
+    default_integrity: "Medium"
+    default_availability: "High"
+    description: "Routes and authenticates API requests"
+
+  - name: "Session Management"
+    default_confidentiality: "Medium"
+    default_integrity: "High"
+    default_availability: "Medium"
+    description: "Manages user sessions and tokens"
+
+  - name: "Case Management UI"
+    default_confidentiality: "High"
+    default_integrity: "Medium"
+    default_availability: "Medium"
+    description: "Displays and manages case data"
+
+  - name: "Audit Logs"
+    default_confidentiality: "Medium"
+    default_integrity: "High"
+    default_availability: "Medium"
+    description: "Stores audit trail of actions"
+
+  - name: "Database (Oracle/JDBC)"
+    default_confidentiality: "High"
+    default_integrity: "High"
+    default_availability: "High"
+    description: "Primary data storage"
+
+# Data sensitivity levels
+sensitivity_levels:
+  - level: "Critical"
+    description: "Data whose exposure would cause severe harm (e.g., credentials, encryption keys)"
+    examples: ["Passwords", "API keys", "Private keys", "Secret tokens"]
+
+  - level: "High"
+    description: "Sensitive personal or business data (e.g., PII, financial data)"
+    examples: ["User PII", "Transaction history", "Risk scores", "Case data"]
+
+  - level: "Medium"
+    description: "Internal business data not meant for public disclosure"
+    examples: ["User agent strings", "OS versions", "Browser types", "Business logic"]
+
+  - level: "Low"
+    description: "Non-sensitive operational data"
+    examples: ["API documentation", "Metadata", "Public endpoints"]
+
+# Priority matrix (default values)
+priority_matrix:
+  - likelihood: "High"
+    impact: "High"
+    priority: "Critical"
+  - likelihood: "High"
+    impact: "Medium"
+    priority: "High"
+  - likelihood: "Medium"
+    impact: "High"
+    priority: "High"
+  - likelihood: "Medium"
+    impact: "Medium"
+    priority: "Medium"
+  - likelihood: "Low"
+    impact: "High"
+    priority: "Medium"
+  - likelihood: "High"
+    impact: "Low"
+    priority: "Medium"
+  - likelihood: "Medium"
+    impact: "Low"
+    priority: "Low"
+  - likelihood: "Low"
+    impact: "Medium"
+    priority: "Low"
+  - likelihood: "Low"
+    impact: "Low"
+    priority: "Low"

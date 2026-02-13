@@ -1,0 +1,31 @@
+# tm-scan output directories
+tm-workspace/
+tm-output/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+venv/
+env/
+
+# Security: Never commit .env file with tokens!
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+repos.txt
