@@ -1,0 +1,10 @@
+# Example repos.txt file
+# Add one repository name per line (without org/ prefix)
+# Lines starting with # are ignored
+
+# Example:
+# payment-service
+# user-management
+# risk-assessment-engine
+# transaction-processor
+# case-management-ui

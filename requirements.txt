@@ -1,0 +1,5 @@
+# tm-scan requirements
+# Python 3.9+
+
+pyyaml>=6.0
+requests>=2.31.0
