@@ -1,0 +1,59 @@
+name: tm-scan agentic workflow
+
+on:
+  pull_request:
+    branches: [ "**" ]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  tm-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tm-scan (local quick mode)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTIONS: "true"
+        run: |
+          chmod +x tm-scan
+          ./tm-scan --local-dir . --mode quick --fail-on-critical
+
+      - name: Locate SARIF artifact
+        if: success() || failure()
+        run: |
+          SARIF_PATH=$(find "$HOME/tm-output" -name "threatmodel-report.sarif" -print -quit)
+          if [ -z "$SARIF_PATH" ]; then
+            echo "No SARIF file found." && exit 0
+          fi
+          echo "SARIF_FILE=$SARIF_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload SARIF results
+        if: success() || failure()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.SARIF_FILE }}
+
+      - name: Run deterministic PR reviewer
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python scripts/local_pr_reviewer.py

@@ -10,6 +10,7 @@ import argparse
 import logging
 from datetime import datetime
 from pathlib import Path
+from statistics import mean
 
 # Add src directory to path
 script_dir = Path(__file__).parent
@@ -59,12 +60,8 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Scan repos updated in last 30 days (using GitHub token)
-  %(prog)s --org mbbgrp --since-days 30 --github-token $GITHUB_TOKEN --max-repos 20
-
-  # Or set GITHUB_TOKEN environment variable
-  export GITHUB_TOKEN=your_token_here
-  %(prog)s --org mbbgrp --since-days 30 --max-repos 20
+    # Scan repos updated in last 30 days (GitHub CLI auth)
+    %(prog)s --org mbbgrp --since-days 30 --max-repos 20
 
   # Scan repos from allowlist file only
   %(prog)s --org mbbgrp --repos-file repos.txt --max-repos 10
@@ -77,12 +74,10 @@ Examples:
 
   # Deep scan mode
   %(prog)s --org mbbgrp --since-days 30 --mode deep --max-repos 5
-
-Getting a GitHub Token:
-  1. Go to https://github.com/settings/tokens
-  2. Generate a new Personal Access Token (classic)
-  3. Select 'repo' scope for private repositories
-  4. Use: --github-token YOUR_TOKEN or export GITHUB_TOKEN=YOUR_TOKEN
+  
+Authentication:
+    - In GitHub Actions, set GITHUB_TOKEN and GITHUB_ACTIONS=true (default).
+    - Locally, run: gh auth login
         """,
     )
 
@@ -143,8 +138,30 @@ Getting a GitHub Token:
         help="Skip syft SBOM generation",
     )
     parser.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Generate a PDF report alongside Markdown",
+    )
+    parser.add_argument(
+        "--local-dir",
+        help="Scan a local directory directly (skip GitHub inventory and cloning)",
+    )
+    parser.add_argument(
+        "--fail-on-critical",
+        action="store_true",
+        help="Exit with non-zero status if average DREAD score >= 8.0",
+    )
+    parser.add_argument(
         "--github-token",
-        help="GitHub Personal Access Token (for API access). Alternatively set GITHUB_TOKEN or TM_GITHUB_TOKEN env var.",
+        help="Override the GitHub token (defaults to GITHUB_TOKEN in CI or gh auth token locally).",
+    )
+    parser.add_argument(
+        "--github-api-url",
+        help="GitHub API base URL (e.g., https://github.maybank.com for Enterprise). Alternatively set GITHUB_API_URL env var. Defaults to https://api.github.com.",
+    )
+    parser.add_argument(
+        "--github-enterprise-url",
+        help="[Deprecated] Use --github-api-url instead. GitHub Enterprise Server URL.",
     )
 
     return parser.parse_args()
@@ -167,7 +184,12 @@ def main():
         dry_run=args.dry_run,
         no_gitleaks=args.no_gitleaks,
         no_sbom=args.no_sbom,
+        pdf_reports=args.pdf,
         github_token=args.github_token,
+        github_api_url=args.github_api_url,
+        github_enterprise_url=args.github_enterprise_url,
+        local_dir=args.local_dir,
+        fail_on_critical=args.fail_on_critical,
     )
 
     # Set up logging
@@ -180,65 +202,79 @@ def main():
     print("tm-scan: Threat Modeling Scanner")
     print("="*60)
     if config.github_token:
-        print("Authentication: GitHub API Token")
-    elif os.environ.get("GITHUB_TOKEN") or os.environ.get("TM_GITHUB_TOKEN"):
-        print("Authentication: GitHub API Token (from env var)")
+        print("Authentication: Hybrid (GITHUB_ACTIONS env or gh auth token)")
     else:
-        print("Authentication: Public API (no token) or GitHub CLI")
-        print("  For private repos, use: --github-token YOUR_TOKEN")
-        print("  Or: export GITHUB_TOKEN=your_token")
+        print("Authentication: None (GitHub token missing)")
+        if not config.local_dir:
+            print("  Run 'gh auth login' or set GITHUB_TOKEN in CI.")
+            return 1
     print("="*60)
 
     # Save configuration
     config.save_config()
     logger.info(f"Configuration saved to: {config.metadata_dir / 'run-config.json'}")
 
-    # Step 1: Inventory repositories
-    print("\n[1/6] Inventorying repositories...")
-    inventory = RepoInventory(config)
-    all_repos = inventory.fetch_repos()
-    logger.info(f"Found {len(all_repos)} repositories in org {config.org}")
-    print(f"Found {len(all_repos)} repositories")
+    repo_paths = {}
+    successful_clones = []
 
-    # Step 2: Filter and select repos
-    print("\n[2/6] Filtering and selecting repositories...")
-    filtered_repos = inventory.get_filtered_repos()
-    logger.info(f"Filtered to {len(filtered_repos)} repositories")
-    print(f"Filtered to {len(filtered_repos)} repositories")
+    if config.local_dir:
+        if not config.local_dir.exists():
+            print(f"Local directory not found: {config.local_dir}")
+            return 1
+        repo_name = config.local_dir.name
+        repo_paths[repo_name] = config.local_dir
+        successful_clones = [repo_name]
+        print("\nLocal scan mode: skipping GitHub inventory and cloning.")
+    else:
+        # Step 1: Inventory repositories
+        print("\n[1/6] Inventorying repositories...")
+        inventory = RepoInventory(config)
+        all_repos = inventory.fetch_repos()
+        logger.info(f"Found {len(all_repos)} repositories in org {config.org}")
+        print(f"Found {len(all_repos)} repositories")
 
-    selector = RepoSelector(config)
-    selected_repos = selector.select_repos(filtered_repos)
-    selector.print_selection(selected_repos)
+        # Step 2: Filter and select repos
+        print("\n[2/6] Filtering and selecting repositories...")
+        filtered_repos = inventory.get_filtered_repos()
+        logger.info(f"Filtered to {len(filtered_repos)} repositories")
+        print(f"Filtered to {len(filtered_repos)} repositories")
 
-    # Save inventory and selection
-    inventory.save_inventory(all_repos)
-    skipped_repos = inventory.get_skipped_repos([r["name"] for r in selected_repos])
-    selector.save_selection(selected_repos, skipped_repos)
-    logger.info(f"Selected {len(selected_repos)} repositories for scanning")
+        selector = RepoSelector(config)
+        selected_repos = selector.select_repos(filtered_repos)
+        selector.print_selection(selected_repos)
 
-    # Dry run - exit after selection
-    if config.dry_run:
-        print("\nDry run complete. No repositories cloned.")
-        return 0
+        # Save inventory and selection
+        inventory.save_inventory(all_repos)
+        skipped_repos = inventory.get_skipped_repos([r["name"] for r in selected_repos])
+        selector.save_selection(selected_repos, skipped_repos)
+        logger.info(f"Selected {len(selected_repos)} repositories for scanning")
 
-    # Step 3: Clone repositories
-    print("\n[3/6] Cloning repositories...")
-    cloner = RepoCloner(config)
-    clone_results = {}
+        # Dry run - exit after selection
+        if config.dry_run:
+            print("\nDry run complete. No repositories cloned.")
+            return 0
 
-    for repo in selected_repos:
-        repo_name = repo["name"]
-        success, message = cloner.clone_repo(repo_name)
-        clone_results[repo_name] = (success, message)
-        print(f"  {repo_name}: {message}")
-        logger.info(f"Clone {repo_name}: {success}")
+        # Step 3: Clone repositories
+        print("\n[3/6] Cloning repositories...")
+        cloner = RepoCloner(config)
+        clone_results = {}
 
-    successful_clones = [r for r, (s, _) in clone_results.items() if s]
-    logger.info(f"Successfully cloned {len(successful_clones)}/{len(selected_repos)} repositories")
+        for repo in selected_repos:
+            repo_name = repo["name"]
+            success, message = cloner.clone_repo(repo_name)
+            clone_results[repo_name] = (success, message)
+            print(f"  {repo_name}: {message}")
+            logger.info(f"Clone {repo_name}: {success}")
 
-    if not successful_clones:
-        print("\nNo repositories successfully cloned. Exiting.")
-        return 1
+        successful_clones = [r for r, (s, _) in clone_results.items() if s]
+        for repo_name in successful_clones:
+            repo_paths[repo_name] = cloner.get_repo_path(repo_name)
+
+        logger.info(f"Successfully cloned {len(successful_clones)}/{len(selected_repos)} repositories")
+
+        if not successful_clones:
+            print("\nNo repositories successfully cloned. Exiting.")
+            return 1
 
     # Step 4: Scan for evidence
     print("\n[4/6] Scanning for evidence...")
@@ -246,7 +282,7 @@ def main():
     evidence_results = {}
 
     for i, repo_name in enumerate(successful_clones, 1):
-        repo_path = cloner.get_repo_path(repo_name)
+        repo_path = repo_paths[repo_name]
         print(f"  [{i}/{len(successful_clones)}] Scanning {repo_name}...")
 
         evidence = scanner.scan_repo(repo_name, repo_path)
@@ -255,6 +291,38 @@ def main():
         scanner.save_evidence(evidence, repo_name)
         scanner.save_evidence_summary(evidence, repo_name)
         logger.info(f"Scanned {repo_name}: {len(evidence.get('keyword_hits', []))} keyword hits")
+
+    # DREAD quality gate (post-scan)
+    reporter = ThreatModelReporter(config)
+
+    def _average_dread(threats):
+        scores = []
+        for item in threats:
+            dread = item.get("threat", {}).get("dread_score", {}) or {}
+            values = [dread.get(k, 0) for k in [
+                "damage",
+                "reproducibility",
+                "exploitability",
+                "affected_users",
+                "discoverability",
+            ]]
+            scores.append(mean(values))
+        return mean(scores) if scores else 0.0
+
+    dread_failures = []
+    dread_scores = {}
+    for repo_name in successful_clones:
+        relevant_threats = reporter._match_threats(evidence_results.get(repo_name, {}))
+        avg_score = _average_dread(relevant_threats)
+        dread_scores[repo_name] = avg_score
+        if config.fail_on_critical and avg_score >= 8.0:
+            dread_failures.append((repo_name, avg_score))
+
+    if dread_failures:
+        print("\nCritical: Average DREAD score threshold exceeded:")
+        for name, score in dread_failures:
+            print(f"- {name}: {score:.2f}")
+        return 1
 
     # Step 5: Run gitleaks and syft (optional)
     gitleaks = GitleaksWrapper(config)
@@ -276,7 +344,7 @@ def main():
     sbom_results = {}
 
     for i, repo_name in enumerate(successful_clones, 1):
-        repo_path = cloner.get_repo_path(repo_name)
+        repo_path = repo_paths[repo_name]
 
         # Gitleaks
         if not config.no_gitleaks and gitleaks.available:
@@ -300,12 +368,21 @@ def main():
 
     # Step 6: Generate threat model reports
     print("\n[6/6] Generating threat model reports...")
-    reporter = ThreatModelReporter(config)
+    pdf_renderer = None
+    if config.pdf_reports:
+        try:
+            from src.report_pdf import PdfReportRenderer
+            pdf_renderer = PdfReportRenderer()
+        except Exception as e:
+            print(f"WARNING: PDF generation unavailable: {e}")
+            logger.warning(f"PDF generation unavailable: {e}")
+            pdf_renderer = None
 
     for i, repo_name in enumerate(successful_clones, 1):
         print(f"  [{i}/{len(successful_clones)}] {repo_name}")
 
         evidence = evidence_results.get(repo_name, {})
+        relevant_threats = reporter._match_threats(evidence)
         gitleaks_summary = gitleaks_results.get(repo_name, {})
         sbom_summary = sbom_results.get(repo_name, {})
 
@@ -316,6 +393,12 @@ def main():
             sbom_summary,
         )
         reporter.save_report(report_content, repo_name)
+        sarif_content = reporter.generate_sarif(repo_name, relevant_threats)
+        reporter.save_sarif(sarif_content, repo_name)
+        if pdf_renderer:
+            report_dir = config.get_repo_report_dir(repo_name)
+            pdf_path = report_dir / "threatmodel-report.pdf"
+            pdf_renderer.generate_pdf(report_content, pdf_path)
         logger.info(f"Generated report for {repo_name}")
 
     # Summary

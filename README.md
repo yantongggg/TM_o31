@@ -1,876 +1,1289 @@
-# tm-scan: Threat Modeling Scanner
+# tm-scan — Enterprise Agentic Threat Modeling Engine
 
-A macOS-compatible, local-only threat modeling scanner for GitHub organizations. Generates per-repository Markdown reports for security review.
+<div align="center">
+
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Python](https://img.shields.io/badge/python-3.9+-green)
+![License](https://img.shields.io/badge/license-MIT-orange)
+
+**A zero-PAT, five-dimensional threat modeling scanner that runs locally or in CI/CD**
+
+Generates Markdown, SARIF, and Mermaid DFDs with deterministic PR feedback — no external LLMs required.
+
+</div>
+
+---
 
 ## Table of Contents
 
-- [Quick Start](#quick-start-5-minutes)
-- [Architecture & Workflow](#architecture--workflow)
-- [Features](#features)
-- [Detailed Setup](#detailed-setup)
-- [Usage Examples](#usage-examples)
-- [Output Structure](#output-structure)
-- [Interpreting Reports](#interpreting-reports)
-- [Extending Knowledge Base](#extending-knowledge-base)
-- [Troubleshooting](#troubleshooting)
+- [Overview](#overview)
+- [Why tm-scan](#why-tm-scan)
+- [Architecture](#architecture)
+- [Five-Dimensional Framework](#five-dimensional-framework)
+- [Quickstart](#quickstart)
+- [CI/CD Integration](#cicd-integration)
+- [PR Reviewer Bot](#pr-reviewer-bot)
+- [Configuration](#configuration)
+- [Outputs](#outputs)
+- [Knowledge Base](#knowledge-base)
+- [Development](#development)
 
 ---
 
-## Quick Start (5 Minutes)
+## Overview
 
-### Step 1: Get a GitHub Token (2 minutes)
+**tm-scan** is an automated threat modeling scanner that combines multiple security frameworks into a single, deterministic engine. It scans code repositories for security-relevant evidence, maps findings to threat models, and generates actionable reports with inline PR feedback.
 
-1. Go to: https://github.com/settings/tokens
-2. Click **"Generate new token"** → **"Generate new token (classic)"**
-3. Name it: `tm-scan`
-4. Select scope: **`repo`** (required for private repositories)
-5. Click **"Generate token"**
-6. **Copy the token** (starts with `ghp_`)
+### Key Features
 
-> **Note**: This token is only stored locally and never uploaded.
-
-### Step 2: Install the Tool (1 minute)
-
-```bash
-cd tm-scan
-pip install -r requirements.txt
-chmod +x tm-scan
-```
-
-### Step 3: Configure Authentication (1 minute)
-
-**Choose ONE method:**
-
-**Method A: .env file (Recommended - Easiest)**
-```bash
-cp .env.example .env
-nano .env  # or use your preferred editor
-# Add your token: GITHUB_TOKEN=ghp_your_token_here
-# Save and exit
-```
-
-**Method B: Environment Variable**
-```bash
-export GITHUB_TOKEN=ghp_your_token_here
-```
-
-**Method C: GitHub CLI (Alternative)**
-```bash
-brew install gh
-gh auth login
-```
-
-### Step 4: Run Your First Scan (1 minute)
-
-```bash
-# First, do a dry run to see what will be scanned
-./tm-scan --org YOUR_ORG --since-days 30 --dry-run
-
-# Then run the actual scan
-./tm-scan --org YOUR_ORG --since-days 30 --max-repos 10
-```
-
-### Step 5: View Your Reports
-
-```bash
-# Reports are saved in ~/tm-output/reports/
-ls ~/tm-output/reports/
-
-# Open a threat model report
-open ~/tm-output/repo-name/2025-02-13/threatmodel-report.md
-```
+| Feature | Description |
+|---------|-------------|
+| **Zero-PAT Auth** | Uses GitHub Actions token in CI or `gh` CLI locally — no manual PAT management |
+| **5-D Framework** | STRIDE + PASTA + LINDDUN + CWE + DREAD in one pass |
+| **Deterministic** | Rule-based matching produces consistent, reproducible results |
+| **Multi-Format Output** | Markdown reports, SARIF for code scanning, Evidence JSON, optional PDF |
+| **PR Guardrails** | Automatic inline comments with reviewer guidance and fix snippets |
+| **Quality Gates** | DREAD-based threshold enforcement (avg ≥ 8.0 fails CI) |
+| **Enterprise Ready** | Supports GitHub Enterprise Server, custom API endpoints |
 
 ---
 
-## Architecture & Workflow
+## Why tm-scan
 
-### High-Level Architecture
+### For Security Teams
+- **Scale:** Scan entire organizations with time-based and allowlist filtering
+- **Consistency:** Deterministic rules ensure repeatable results
+- **Integration:** Native SARIF output for GitHub Security tab
+- **Evidence-Based:** All findings backed by code location and threat model references
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           tm-scan Architecture                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌────────────┐     ┌────────────┐     ┌────────────┐     ┌───────────┐  │
-│  │   GitHub   │────▶│ tm-scan    │────▶│ Local      │────▶│ Reports   │  │
-│  │   Org/API  │     │   CLI      │     │ Scanner    │     │ (Markdown)│  │
-│  └────────────┘     └────────────┘     └────────────┘     └───────────┘  │
-│       ▲                   │                    │                              │
-│       │                   │                    │                              │
-│       │                   ▼                    ▼                              │
-│  ┌────────────┐     ┌────────────┐     ┌────────────┐                      │
-│  │   Token/   │     │ Knowledge  │     │ Optional   │                      │
-│  │    CLI     │     │   Base     │     │  Tools     │                      │
-│  │ (Auth)     │     │ (YAML KB)  │     │ gitleaks/  │                      │
-│  └────────────┘     └────────────┘     │   syft     │                      │
-│                                         └────────────┘                      │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+### For Development Teams
+- **Fast Feedback:** CI/CD integration with inline PR comments
+- **Actionable:** Specific fix snippets, not generic warnings
+- **Zero Config:** Works out of the box with sensible defaults
+- **Local Testing:** Run on your machine before pushing
 
-### System Components
+### For Compliance
+- **Audit Trail:** JSON evidence files for every scan
+- **CWE Mapping:** Direct mapping to MITRE CWE standard
+- **DREAD Scoring:** Quantified risk assessment
+- **Privacy-Aware:** LINDDUN categories for data protection
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              COMPONENTS                                     │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                     CORE ENGINE (Python)                             │    │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │    │
-│  │  │ Config   │ │Inventory │ │Selector  │ │ Cloner   │ │ Scanner  │  │    │
-│  │  │ Module   │ │  Module  │ │  Module  │ │  Module  │ │  Module  │  │    │
-│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘  │    │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐                            │    │
-│  │  │ Gitleaks │ │  Syft    │ │ Reporter │                            │    │
-│  │  │ Wrapper  │ │ Wrapper  │ │  Module  │                            │    │
-│  │  └──────────┘ └──────────┘ └──────────┘                            │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                    KNOWLEDGE BASE (YAML)                             │    │
-│  │  ┌──────────────────────┐  ┌──────────────────────┐                │    │
-│  │  │   kb-keywords.yaml   │  │   kb-threats.yaml    │                │    │
-│  │  │  - 200+ keywords     │  │  - STRIDE threats    │                │    │
-│  │  │  - Categories        │  │  - Controls          │                │    │
-│  │  │  - Priorities        │  │  - Questions         │                │    │
-│  │  └──────────────────────┘  └──────────────────────┘                │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+---
 
-### Complete Workflow Diagram
+## Architecture
+
+### High-Level Flow
 
 ```mermaid
 flowchart TD
-    Start([Start tm-scan]) --> Auth[Authenticate]
-    Auth --> |Token| TokenMethod[GitHub API Token]
-    Auth --> |CLI| CLIMethod[GitHub CLI gh]
-    Auth --> |None| PublicMethod[Public API]
+    subgraph Input["Input Sources"]
+        GH[GitHub API/CLI]
+        Local[Local Directory]
+        KB[Knowledge Base]
+    end
 
-    TokenMethod --> Inventory[1. Inventory Repos]
-    CLIMethod --> Inventory
-    PublicMethod --> Inventory
+    subgraph Core["tm-scan Core Engine"]
+        Inv[Inventory Module]
+        Sel[Selector Module]
+        Cln[Cloner Module]
+        Scn[Scanner Module]
+        GT[Gitleaks Wrapper]
+        ST[Syft SBOM Wrapper]
+        Rep[Reporter Module]
+    end
 
-    Inventory --> Fetch[Fetch from GitHub API]
-    Fetch --> |Get all repos| RepoList[Repository List]
+    subgraph Output["Outputs"]
+        MD[Markdown Report]
+        SARIF[SARIF File]
+        EJSON[Evidence JSON]
+        PDF[PDF Report]
+    end
 
-    RepoList --> Filter[2. Filter & Select]
-    Filter --> TimeFilter[Time Filter<br/>since-days]
-    Filter --> AllowlistFilter[Allowlist Filter<br/>repos.txt]
-    Filter --> ArchivedFilter[Exclude Archived]
+    subgraph CI["CI/CD Integration"]
+        Workflow[GitHub Actions]
+        PRBot[PR Reviewer Bot]
+        SecurityTab[Security Tab]
+    end
 
-    TimeFilter --> Score[Score Repos]
-    AllowlistFilter --> Score
-    ArchivedFilter --> Score
+    GH --> Inv
+    Local --> Scn
+    KB --> Scn
+    KB --> Rep
 
-    Score --> |Patch signals<br/>Language<br/>Recency| Prioritized[Ranked Repo List]
+    Inv --> Sel
+    Sel --> Cln
+    Cln --> Scn
+    Scn --> GT
+    Scn --> ST
+    Scn --> Rep
+    GT --> Rep
+    ST --> Rep
 
-    Prioritized --> DryRun{Dry Run?}
-    DryRun --> |Yes| Output[Output Selected List]
-    DryRun --> |No| Clone[3. Clone Repos]
+    Rep --> MD
+    Rep --> SARIF
+    Rep --> EJSON
+    Rep --> PDF
 
-    Output --> End([End])
+    SARIF --> SecurityTab
+    Workflow --> Scn
+    Workflow --> PRBot
+    EJSON --> PRBot
+```
 
-    Clone --> |git clone<br/>--depth=1| Workspace[~/tm-workspace/]
+### Module Architecture
 
-    Workspace --> Scan[4. Scan Evidence]
-    Scan --> Keyword[Keyword Scanner<br/>200+ terms]
-    Scan --> FilePattern[File Pattern Match<br/>OpenAPI, migrations, configs]
-    Scan --> SecretScan{Gitleaks?}
-    Scan --> SBOMScan{Syft?}
+```mermaid
+graph TB
+    subgraph CLI["CLI Entry Point: tm-scan"]
+        Parser[Argument Parser]
+        Config[Configuration]
+        Logger[Logging Setup]
+    end
 
-    Keyword --> Evidence[Evidence JSON]
-    FilePattern --> Evidence
+    subgraph Pipeline["Scanning Pipeline"]
+        Inv[RepoInventory<br/>src/inventory.py]
+        Sel[RepoSelector<br/>src/selector.py]
+        Cln[RepoCloner<br/>src/cloner.py]
+        Scn[EvidenceScanner<br/>src/scanner.py]
+    end
 
-    SecretScan --> |Yes| GitleaksRun[Run Gitleaks]
-    SecretScan --> |No| SkipSecret[Skip]
-    GitleaksRun --> GitleaksSummary[Gitleaks Summary<br/>Redacted]
-    SkipSecret --> GitleaksSummary
+    subgraph Tools["External Tools"]
+        GL[GitleaksWrapper<br/>src/gitleaks_wrapper.py]
+        SY[SyftWrapper<br/>src/sbom_wrapper.py]
+    end
 
-    SBOMScan --> |Yes| SyftRun[Run Syft]
-    SBOMScan --> |No| SkipSBOM[Skip]
-    SyftRun --> SBOMSummary[SBOM Summary]
-    SkipSBOM --> SBOMSummary
+    subgraph Reporting["Reporting Layer"]
+        TMR[ThreatModelReporter<br/>src/reporter.py]
+        PDF[PdfReportRenderer<br/>src/report_pdf.py]
+    end
 
-    Evidence --> Report[5. Generate Reports]
-    GitleaksSummary --> Report
-    SBOMSummary --> Report
+    subgraph CI["CI Components"]
+        WF[tm-scan-agent.yml<br/>.github/workflows/]
+        PRB[local_pr_reviewer.py<br/>scripts/]
+    end
 
-    Report --> STRIDE[STRIDE Report<br/>threatmodel-report.md]
-    Report --> EvidenceSummary[Evidence Summary<br/>evidence-summary.md]
-    Report --> EvidenceJSON[Evidence JSON<br/>evidence.json]
+    subgraph Knowledge["Knowledge Base"]
+        KB_T[kb-threats.yaml]
+        KB_R[kb-rules.yaml]
+        KB_K[kb-keywords.yaml]
+    end
 
-    STRIDE --> OutputDir[~/tm-output/]
-    EvidenceSummary --> OutputDir
-    EvidenceJSON --> OutputDir
-    GitleaksSummary --> OutputDir
-    SBOMSummary --> OutputDir
+    Parser --> Config
+    Config --> Logger
 
-    OutputDir --> End
+    Logger --> Inv
+    Inv --> Sel
+    Sel --> Cln
+    Cln --> Scn
 
-    style Start fill:#90EE90
-    style End fill:#90EE90
-    style Auth fill:#FFD700
-    style Inventory fill:#87CEEB
-    style Filter fill:#87CEEB
-    style Clone fill:#DDA0DD
-    style Scan fill:#FFA07A
-    style Report fill:#98FB98
-    style STRIDE fill:#FF6B6B
+    Scn --> GL
+    Scn --> SY
+
+    Scn --> TMR
+    GL --> TMR
+    SY --> TMR
+    TMR --> PDF
+
+    KB_T --> Scn
+    KB_R --> Scn
+    KB_K --> Scn
+    KB_T --> TMR
+    KB_T --> PRB
+
+    TMR --> WF
+    WF --> PRB
+```
+
+### End-to-End Scanning Workflow
+
+```mermaid
+flowchart TD
+    Start([User invokes tm-scan]) --> Parse[Parse CLI arguments]
+    Parse --> Config[Load Configuration]
+    Config --> Auth[Authenticate<br/>GitHub Token / gh CLI]
+
+    Auth --> Mode{Scan Mode?}
+
+    Mode -->|Local Dir| Local[Use local directory]
+    Mode -->|Organization| Inv[Inventory: Fetch Repos]
+
+    Inv --> Filter[Filter: Time + Allowlist]
+    Filter --> Select[Selector: Score & Prioritize]
+    Select --> DryRun{Dry Run?}
+    DryRun -->|Yes| OutputDry[Output selection list]
+    DryRun -->|No| Clone[Cloner: Git Clone/Update]
+
+    Local --> Scan
+    Clone --> Scan[Scanner: Evidence Discovery]
+
+    Scan --> FileScan[Walk directory tree<br/>Skip excluded dirs]
+    FileScan --> Pattern[File pattern matching<br/>OpenAPI/DB/Config files]
+    Pattern --> Content[Content scanning<br/>Keywords + Regex rules]
+
+    Content --> Evidence[Collect evidence:<br/>keyword_hits, rule_hits,<br/>auth_hints, db_hints]
+    Evidence --> SaveEvid[Save evidence.json]
+
+    SaveEvid --> Gitleaks{Gitleaks<br/>enabled?}
+    Gitleaks -->|Yes| SecretScan[gitleaks detect<br/>Secret scanning]
+    Gitleaks -->|No| SyftCheck
+    SecretScan --> SaveGL[Save gitleaks-summary.json]
+
+    SaveGL --> SyftCheck{Syft<br/>enabled?}
+    SyftCheck -->|Yes| SBOM[syft scan<br/>SBOM generation]
+    SyftCheck -->|No| Match
+    SBOM --> SaveSyft[Save sbom-summary.json]
+
+    SaveSyft --> Match[Match Threats:<br/>Keywords × KB<br/>Rules × KB]
+    Match --> DREAD[Calculate DREAD scores]
+
+    DREAD --> QualityGate{DREAD avg<br/>≥ 8.0?}
+    QualityGate -->|Yes| Fail[Exit non-zero<br/>Critical threshold]
+    QualityGate -->|No| Generate[Generate Reports]
+
+    Generate --> MD[Markdown Report<br/>+ Mermaid DFD]
+    Generate --> SARIF[SARIF Report<br/>For Security tab]
+    Generate --> PDF{PDF<br/>enabled?}
+
+    PDF -->|Yes| RenderPDF[Render PDF Report]
+    PDF -->|No| Complete
+    RenderPDF --> Complete([Scan Complete])
+
+    Fail --> PRBot{In CI/CD?}
+    PRBot -->|Yes| RunPRBot[Run PR Reviewer Bot]
+    PRBot -->|No| End
+    RunPRBot --> End([End])
+```
+
+### Evidence Discovery Flow
+
+```mermaid
+flowchart TD
+    subgraph Input["Input Sources"]
+        KB_Keywords[kb-keywords.yaml<br/>150+ keywords]
+        KB_Rules[kb-rules.yaml<br/>Advanced regex patterns]
+        FilePatterns[File patterns<br/>OpenAPI/DB/Config]
+    end
+
+    subgraph Scanner["EvidenceScanner Engine"]
+        Walk[Walk directory tree]
+        Filter[Filter excluded dirs:<br/>.git, node_modules,<br/>vendor, build, dist]
+        Check[Check file patterns]
+        Read[Read file content]
+        MatchKW[Match keywords]
+        MatchRules[Match regex rules]
+        ExtractHints[Extract hints:<br/>auth, db, secrets]
+    end
+
+    subgraph Output["Evidence Collection"]
+        KeywordHits[keyword_hits<br/>Category, priority, file]
+        RuleHits[rule_hits<br/>Rule ID, severity, CWE]
+        AuthHints[auth_hints<br/>Auth mechanisms found]
+        DBHints[db_hints<br/>Database types]
+        RiskyConfigs[risky_config_hints<br/>URLs, credentials]
+    end
+
+    KB_Keywords --> MatchKW
+    KB_Rules --> MatchRules
+    FilePatterns --> Check
+
+    Walk --> Filter
+    Filter --> Check
+    Check -->|Match| Read
+    Read --> MatchKW
+    Read --> MatchRules
+
+    MatchKW --> ExtractHints
+    MatchRules --> ExtractHints
+
+    MatchKW --> KeywordHits
+    MatchRules --> RuleHits
+    ExtractHints --> AuthHints
+    ExtractHints --> DBHints
+    ExtractHints --> RiskyConfigs
+```
+
+### Threat Matching Process
+
+```mermaid
+flowchart LR
+    subgraph Evidence["Evidence from Scanner"]
+        EK[keyword_hits<br/>Set of keywords]
+        ER[rule_hits<br/>Set of rule IDs]
+    end
+
+    subgraph Knowledge["Knowledge Base"]
+        KT[kb-threats.yaml<br/>Threat definitions]
+    end
+
+    subgraph Process["Matching Engine"]
+        Iter1[For each threat]
+        GetKeys[Get threat keywords]
+        GetRules[Get trigger rules]
+        IntersectK[Intersect with evidence keywords]
+        IntersectR[Intersect with rule IDs]
+        Union{Union matches}
+        Score[Score by evidence count]
+        Sort[Sort by relevance]
+    end
+
+    subgraph Output["Matched Threats"]
+        MT[Relevant threats<br/>With evidence counts]
+        Details[Keyword hits,<br/>Rule hits,<br/>File locations]
+    end
+
+    EK --> IntersectK
+    ER --> IntersectR
+    KT --> Iter1
+
+    Iter1 --> GetKeys
+    Iter1 --> GetRules
+    GetKeys --> IntersectK
+    GetRules --> IntersectR
+
+    IntersectK --> Union
+    IntersectR --> Union
+    Union --> Score
+    Score --> Sort
+    Sort --> MT
+    MT --> Details
+```
+
+### Report Generation Flow
+
+```mermaid
+flowchart TD
+    subgraph Inputs["Report Inputs"]
+        Evidence[evidence.json]
+        KB[kb-threats.yaml]
+        Gitleaks[gitleaks-summary.json]
+        SBOM[sbom-summary.json]
+        Config[Scan config]
+    end
+
+    subgraph Report["ThreatModelReporter"]
+        Match[Match threats to evidence]
+        Exec[Generate executive summary]
+        Risk[Calculate risk level]
+        DFD[Generate Mermaid DFD]
+        STRIDE[Build STRIDE distribution]
+        Assets[Map assets/flows<br/>with CIA triad]
+        Details[Generate detailed<br/>threat sections]
+        Recs[Generate recommendations]
+        Quest[Generate reviewer questions]
+    end
+
+    subgraph Outputs["Report Formats"]
+        MD[threatmodel-report.md<br/>Full Markdown]
+        SARIF[threatmodel-report.sarif<br/>SARIF v2.1.0]
+        PDF[threatmodel-report.pdf<br/>Optional PDF]
+    end
+
+    Evidence --> Match
+    KB --> Match
+    Match --> Exec
+    Evidence --> Risk
+    Gitleaks --> Risk
+    Risk --> Exec
+
+    Evidence --> DFD
+    KB --> DFD
+
+    Match --> STRIDE
+    Evidence --> Assets
+    Match --> Details
+    Evidence --> Recs
+    Match --> Quest
+
+    Exec --> MD
+    DFD --> MD
+    STRIDE --> MD
+    Assets --> MD
+    Details --> MD
+    Recs --> MD
+    Quest --> MD
+
+    Match --> SARIF
+
+    MD --> PDF
+```
+
+### Quality Gate Flow
+
+```mermaid
+flowchart TD
+    subgraph Scan["After Evidence Collection"]
+        Threats[Matched threats N]
+        DREAD_Values[Individual DREAD scores]
+    end
+
+    subgraph Calculate["Quality Gate Calculation"]
+        Sum[Sum all DREAD values]
+        Divide[Divide by N threats]
+        Avg[Average DREAD score]
+    end
+
+    subgraph Decision["Gate Decision"]
+        Compare{Compare to threshold<br/>≥ 8.0?}
+        Pass[Pass - Continue]
+        Fail[Fail - Exit non-zero]
+    end
+
+    subgraph Actions["Based on Decision"]
+        Generate[Generate all reports<br/>Upload SARIF]
+        Block[Block PR/commit<br/>Trigger PR reviewer]
+    end
+
+    Threats --> Calculate
+    DREAD_Values --> Calculate
+
+    Sum --> Divide
+    Divide --> Avg
+    Avg --> Compare
+
+    Compare -->|< 8.0| Pass
+    Compare -->|≥ 8.0| Fail
+
+    Pass --> Generate
+    Fail --> Block
+
+    Generate --> Success([✓ Scan successful])
+    Block --> PRReviewer([⚠ PR Reviewer triggered])
 ```
 
 ### Data Flow Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              DATA FLOW                                      │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph External["External Systems"]
+        GH_API[GitHub API]
+        GH_CLI[gh CLI]
+        GIT[Git Repositories]
+    end
 
-  INPUT                               PROCESS                              OUTPUT
-┌─────────┐       ┌──────────────┐       ┌──────────────┐       ┌─────────┐
-│         │       │              │       │              │       │         │
-│ GitHub  │──────▶│   tm-scan    │──────▶│   Scanner    │──────▶│  JSON   │
-│   API   │       │   CLI        │       │   Engine     │       │  Data   │
-│         │       │              │       │              │       │         │
-└─────────┘       └──────────────┘       └──────────────┘       └─────────┘
-                       │                         │
-                       │                         ▼
-                       │                  ┌──────────────┐
-  ┌─────────┐         │                  │              │
-  │         │         │                  │ Knowledge    │
-  │ .env    │─────────┘                  │    Base      │
-  │ Token   │                            │   (YAML)     │
-  │         │                            │              │
-  └─────────┘                            └──────────────┘
-                                                   │
-                                                   ▼
-                                          ┌──────────────┐
-                                          │              │
-                                          │   Reporter   │
-                                          │   Module     │
-                                          │              │
-                                          └──────────────┘
-                                                   │
-                   ┌─────────────────────────────┼─────────────────────────────┐
-                   ▼                             ▼                             ▼
-            ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
-            │             │              │             │              │             │
-            │  Evidence   │              │   STRIDE    │              │   Summary   │
-            │  Summary    │              │   Report    │              │   Reports   │
-            │  .md        │              │   .md       │              │   .txt      │
-            │             │              │             │              │             │
-            └─────────────┘              └─────────────┘              └─────────────┘
-```
+    subgraph Knowledge["Knowledge Base"]
+        KB1[kb-threats]
+        KB2[kb-rules]
+        KB3[kb-keywords]
+    end
 
-### Processing Pipeline
+    subgraph Pipeline["Data Pipeline"]
+        Inv[Inventory<br/>List repos]
+        Sel[Selector<br/>Prioritize repos]
+        Cln[Cloner<br/>Get code]
+        Scn[Scanner<br/>Find evidence]
+        Mat[Matcher<br/>Map threats]
+        Rep[Reporter<br/>Generate output]
+    end
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SCANNING PIPELINE STAGES                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  STAGE 1: DISCOVERY                                   ┌─────────────────┐  │
-│  ─────────────────                                   │   GitHub API    │  │
-│  • List organization repos                           │                 │  │
-│  • Get metadata (name, updated, language, etc.)      │  Token / CLI    │  │
-│  • Apply time filter & allowlist                      │                 │  │
-│                                                       └────────▲────────┘  │
-│  STAGE 2: SELECTION                                            │           │
-│  ──────────────                                            Auth           │
-│  • Score by patch-specific signals                                            │
-│  • Prioritize: Java/Oracle/risk/transaction keywords                         │
-│  • Sort by score descending                                                   │
-│  • Enforce max-repos limit                                                    │
-│                                                                             │
-│  STAGE 3: ACQUISITION                                   ┌─────────────────┐  │
-│  ────────────────                                   │     Git SSH     │  │
-│  • Clone repos (shallow, depth=1)                     │                 │  │
-│  • Use shallow clone for speed                        │ git@github.com  │  │
-│  • Workspace: ~/tm-workspace/                         │                 │  │
-│                                                       └─────────────────┘  │
-│  STAGE 4: ANALYSIS                                                             │
-│  ─────────────                                                            │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │                    EVIDENCE DISCOVERY                             │   │
-│  ├────────────────────────────────────────────────────────────────────┤   │
-│  │  • Keyword scanning (200+ patch-specific terms)                   │   │
-│  │  • File pattern matching (OpenAPI, migrations, configs)           │   │
-│  │  • Categorize by type (auth, database, business logic, etc.)     │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │                    OPTIONAL SCANNERS                              │   │
-│  ├────────────────────────────────────────────────────────────────────┤   │
-│  │  ┌─────────────────┐              ┌─────────────────┐             │   │
-│  │  │   Gitleaks      │              │     Syft        │             │   │
-│  │  │  (Secret Scan)  │              │   (SBOM Gen)    │             │   │
-│  │  │  • Find tokens  │              │  • List pkgs    │             │   │
-│  │  │  • Redact all   │              │  • Count types  │             │   │
-│  │  │    values       │              │                 │             │   │
-│  │  └─────────────────┘              └─────────────────┘             │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  STAGE 5: REPORTING                                                            │
-│  ─────────────                                                              │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │                  THREAT MODEL GENERATION                           │   │
-│  ├────────────────────────────────────────────────────────────────────┤   │
-│  │  • Map evidence to STRIDE categories                               │   │
-│  │  • Match threats from knowledge base                               │   │
-│  │  • Generate asset inventory table                                  │   │
-│  │  • Create threat analysis table                                     │   │
-│  │  • Prioritize recommendations                                       │   │
-│  │  • Generate confirmation questions                                 │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  OUTPUT: ~/tm-output/reports/<repo>/YYYY-MM-DD/                             │
-│           ├── threatmodel-report.md     (Main STRIDE report)               │
-│           ├── evidence-summary.md        (Human-readable evidence)         │
-│           ├── evidence.json              (Raw structured data)             │
-│           ├── gitleaks-summary.json      (Secret scan counts)              │
-│           └── sbom-summary.json          (Package inventory)               │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+    subgraph Storage["Data Storage"]
+        WS[Workspace<br/>~/tm-workspace]
+        OUT[Output<br/>~/tm-output]
+    end
+
+    subgraph CI["CI/CD"]
+        GHA[GitHub Actions]
+        PR[Pull Requests]
+        SEC[Security Tab]
+    end
+
+    GH_API --> Inv
+    GH_CLI --> Inv
+    Inv --> Sel
+    Sel --> Cln
+    GIT --> Cln
+
+    Cln --> WS
+    WS --> Scn
+
+    KB1 --> Scn
+    KB2 --> Scn
+    KB3 --> Scn
+
+    Scn --> OUT
+    OUT --> Mat
+
+    KB1 --> Mat
+    Mat --> Rep
+
+    Rep --> OUT
+
+    OUT --> GHA
+    GHA --> PR
+    GHA --> SEC
 ```
 
-### Module Interaction Diagram
+### State Transition Diagram
 
-```
-                    ┌─────────────────────────────────────┐
-                    │         tm-scan CLI Entry           │
-                    │          (main function)            │
-                    └──────────────┬──────────────────────┘
-                                   │
-            ┌──────────────────────┼──────────────────────┐
-            │                      │                      │
-            ▼                      ▼                      ▼
-    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-    │   Config      │    │  RepoInventory│    │  RepoSelector │
-    │   Module      │    │    Module     │    │    Module     │
-    │               │    │               │    │               │
-    │ • Load .env   │    │ • Fetch repos │    │ • Score repos │
-    │ • Parse args  │    │ • Apply filter│    │ • Prioritize  │
-    │ • Setup dirs  │    │ • Save inv.   │    │ • Save list   │
-    └───────────────┘    └───────┬───────┘    └───────┬───────┘
-                                   │                     │
-                                   └──────────┬──────────┘
-                                              │
-                                              ▼
-                                    ┌───────────────┐
-                                    │  RepoCloner   │
-                                    │    Module     │
-                                    │               │
-                                    │ • git clone   │
-                                    │ • shallow     │
-                                    └───────┬───────┘
-                                            │
-                ┌───────────────────────────┼───────────────────────────┐
-                │                           │                           │
-                ▼                           ▼                           ▼
-        ┌───────────────┐         ┌───────────────┐         ┌───────────────┐
-        │EvidenceScanner│         │GitleaksWrapper│         │ SyftWrapper   │
-        │    Module     │         │    Module     │         │    Module     │
-        │               │         │               │         │               │
-        │ • Keyword scan│         │ • Secret scan │         │ • SBOM gen    │
-        │ • File match  │         │ • Redaction   │         │ • Pkg count   │
-        └───────┬───────┘         └───────┬───────┘         └───────┬───────┘
-                │                         │                         │
-                └─────────────────────────┼─────────────────────────┘
-                                          │
-                                          ▼
-                                ┌───────────────┐
-                                │ ThreatModel   │
-                                │   Reporter    │
-                                │    Module     │
-                                │               │
-                                │ • STRIDE map  │
-                                │ • Generate    │
-                                │   reports     │
-                                └───────┬───────┘
-                                        │
-                                        ▼
-                                ┌───────────────┐
-                                │  Output Files │
-                                │               │
-                                │ • .md reports │
-                                │ • .json data  │
-                                │ • .txt lists  │
-                                └───────────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> Initializing: User invokes tm-scan
 
+    Initializing --> Authenticated: Token resolved
+    Authenticated --> InventoryMode: --org specified
+    Authenticated --> LocalMode: --local-dir specified
 
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                    KNOWLEDGE BASE SHARED                         │
-    │  ┌──────────────────┐          ┌──────────────────┐            │
-    │  │ kb-keywords.yaml │◀─────────│ kb-threats.yaml  │            │
-    │  │                  │          │                  │            │
-    │  │ • 200+ keywords  │          │ • STRIDE threats │            │
-    │  │ • Categories     │          │ • Controls       │            │
-    │  │ • Priorities     │          │ • Questions      │            │
-    │  └──────────────────┘          └──────────────────┘            │
-    └─────────────────────────────────────────────────────────────────┘
+    InventoryMode --> Fetching: Fetch repos
+    Fetching --> Filtering: Apply filters
+    Filtering --> Selecting: Score & select
+    Selecting --> Cloning: Clone repos
+
+    LocalMode --> Scanning: Skip inventory
+
+    Cloning --> Scanning: Repos ready
+    Scanning --> EvidenceCollect: Scan files
+
+    EvidenceCollect --> GitleaksScan: gitleaks enabled
+    EvidenceCollect --> SBOMScan: gitleaks disabled
+    GitleaksScan --> SBOMScan: Secrets done
+    SBOMScan --> EvidenceCollect: SBOM done
+
+    EvidenceCollect --> ThreatMatching: Evidence collected
+    ThreatMatching --> DREDCalculation: Match threats
+
+    DREDCalculation --> QualityCheck: DREAD calculated
+    QualityCheck --> ReportGeneration: DREAD < 8.0
+    QualityCheck --> CriticalFailure: DREAD ≥ 8.0
+
+    ReportGeneration --> PDFRender: PDF enabled
+    ReportGeneration --> Success: PDF disabled
+    PDFRender --> Success: PDF rendered
+
+    CriticalFailure --> PRReview: In CI/CD
+    CriticalFailure --> Failed: Local scan
+    PRReview --> Failed: Comments posted
+
+    Success --> [*]
+    Failed --> [*]
 ```
 
-### Scan Decision Tree
+### CI/CD Workflow
 
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant GH as GitHub
+    participant WFA as tm-scan Workflow
+    participant Scanner as tm-scan Engine
+    participant SARIF as SARIF Upload
+    participant PRBot as PR Reviewer Bot
+
+    Dev->>GH: Push to PR
+    GH->>WFA: Trigger workflow
+    WFA->>Scanner: Run tm-scan --local-dir .
+
+    Scanner->>Scanner: Scan for evidence
+    Scanner->>Scanner: Match threats (STRIDE/PASTA/LINDDUN/CWE)
+    Scanner->>Scanner: Calculate DREAD scores
+
+    alt DREAD >= 8.0
+        Scanner--xWFA: Exit non-zero (Critical threshold)
+        WFA->>PRBot: Trigger on failure
+        PRBot->>PRBot: Load evidence.json
+        PRBot->>PRBot: Match threats to diff
+        PRBot->>GH: Post inline PR comments
+    else DREAD < 8.0
+        Scanner->>WFA: Return success
+        WFA->>SARIF: Upload SARIF to Security tab
+    end
 ```
-                    START tm-scan
-                         │
-                         ▼
-                ┌────────────────┐
-                │ Auth Method?   │
-                └────┬─────┬─────┘
-                     │     │
-              Token/CLI     │ None
-                     │     │
-                     ▼     ▼
-              ┌──────────────────┐
-              │ Private+Public   │      Public Only
-              │ Repos            │      Repos
-              └────────┬─────────┘
-                       │
-                       ▼
-              ┌──────────────────┐
-              │ since-days > 0?  │
-              └────┬────────┬────┘
-                   │        │
-                  Yes       No
-                   │        │
-                   ▼        ▼
-            ┌──────────┐  ┌──────────┐
-            │ Filter   │  │ All      │
-            │ by date  │  │ repos    │
-            └────┬─────┘  └────┬─────┘
-                 │             │
-                 ▼             │
-         ┌──────────────┐     │
-         │repos.txt?    │     │
-         └──┬───────┬───┘     │
-            │       │         │
-          Yes       No        │
-            │       │         │
-            ▼       ▼         ▼
-    ┌──────────────────────────┐
-    │    Apply allowlist       │
-    │    AND time filter       │
-    └──────────┬───────────────┘
-               │
-               ▼
-    ┌──────────────────────┐
-    │ Score & Prioritize   │
-    │ • Patch signals: +10 │
-    │ • Language: +5       │
-    │ • Private: +3        │
-    │ • Recent: +2         │
-    └──────────┬───────────┘
-               │
-               ▼
-    ┌──────────────────────┐
-    │ max-repos limit?     │
-    └──────────┬───────────┘
-               │
-               ▼
-    ┌──────────────────────┐
-    │   Clone & Scan       │
-    │   (if not dry-run)   │
-    └──────────┬───────────┘
-               │
-               ▼
-    ┌──────────────────────┐
-    │   Generate Reports   │
-    └──────────┬───────────┘
-               │
-               ▼
-              DONE
+
+### Detailed Step-by-Step Workflow
+
+```mermaid
+flowchart TD
+    subgraph Phase1["Phase 1: Initialization"]
+        P1A[1. Parse CLI arguments]
+        P1B[2. Load configuration]
+        P1C[3. Resolve authentication]
+        P1D[4. Setup logging]
+    end
+
+    subgraph Phase2["Phase 2: Repository Discovery"]
+        P2A[5. Fetch repository list<br/>via GitHub API or gh CLI]
+        P2B[6. Apply filters:<br/>- Time-based (since-days)<br/>- Allowlist (repos-file)<br/>- Exclude archived]
+        P2C[7. Score & prioritize repos<br/>based on signals]
+        P2D[8. Select top N repos]
+    end
+
+    subgraph Phase3["Phase 3: Code Acquisition"]
+        P3A[9. Clone or update repos<br/>Shallow clone (depth=1)]
+        P3B[10. Verify repo integrity]
+    end
+
+    subgraph Phase4["Phase 4: Evidence Discovery"]
+        P4A[11. Walk directory tree<br/>Skip: .git, node_modules,<br/>vendor, build, dist]
+        P4B[12. File pattern matching<br/>- OpenAPI specs<br/>- DB migrations<br/>- Config files]
+        P4C[13. Content scanning<br/>- Keyword matching (150+)<br/>- Regex rules (50+)<br/>- Pattern: AND/OR/NOT]
+        P4D[14. Categorize findings<br/>- auth_hints<br/>- db_hints<br/>- risky_configs]
+    end
+
+    subgraph Phase5["Phase 5: Enhanced Scanning"]
+        P5A[15. Gitleaks secret scan<br/>Find: passwords, tokens,<br/>API keys, certificates]
+        P5B[16. Syft SBOM generation<br/>Inventory: packages,<br/>languages, types]
+    end
+
+    subgraph Phase6["Phase 6: Threat Mapping"]
+        P6A[17. Load threat knowledge base]
+        P6B[18. Match evidence to threats<br/>Keywords × KB<br/>Rules × KB]
+        P6C[19. Calculate DREAD scores<br/>per matched threat]
+        P6D[20. Aggregate threat stats<br/>STRIDE distribution<br/>Risk summary]
+    end
+
+    subgraph Phase7["Phase 7: Quality Gate"]
+        P7A[21. Calculate average DREAD]
+        P7B[22. Check threshold ≥ 8.0]
+        P7C[23. Pass or fail scan]
+    end
+
+    subgraph Phase8["Phase 8: Report Generation"]
+        P8A[24. Generate Markdown report<br/>- Executive summary<br/>- Mermaid DFD<br/>- STRIDE table<br/>- Detailed threats<br/>- Recommendations]
+        P8B[25. Generate SARIF report<br/>CWE-mapped results]
+        P8C[26. Save evidence.json<br/>Raw findings]
+        P8D[27. Optional PDF render]
+    end
+
+    subgraph Phase9["Phase 9: CI/CD Actions"]
+        P9A[28. Upload SARIF to<br/>GitHub Security tab]
+        P9B{29. Scan failed?}
+        P9C[30. Trigger PR reviewer<br/>- Load evidence.json<br/>- Match to PR diff<br/>- Post inline comments]
+    end
+
+    Phase1 --> Phase2
+    Phase2 -->|Local mode skip| Phase4
+    Phase2 -->|Org mode| Phase3
+    Phase3 --> Phase4
+    Phase4 --> Phase5
+    Phase5 --> Phase6
+    Phase6 --> Phase7
+    Phase7 --> Phase8
+    Phase8 --> Phase9
+    Phase9 -->|Yes| P9C
+    Phase9 -->|No| Done([Scan Complete])
+```
+
+### Workflow Timing Diagram
+
+```mermaid
+gantt
+    title tm-scan Execution Timeline
+    dateFormat s
+    axisFormat %Ss
+
+    section Initialization
+    Parse & Config        :a1, 0, 1s
+    Auth Setup           :a2, after a1, 1s
+
+    section Repository Discovery
+    Fetch Repos          :b1, after a2, 3s
+    Filter & Select      :b2, after b1, 1s
+
+    section Code Acquisition
+    Clone Repos          :c1, after b2, 10s
+
+    section Evidence Discovery
+    Scan Files           :d1, after c1, 15s
+    Match Patterns       :d2, after d1, 5s
+
+    section Enhanced Scanning
+    Gitleaks Scan        :e1, after d2, 10s
+    Syft SBOM            :e2, after d2, 5s
+
+    section Threat Mapping
+    Match Threats        :f1, after e1, 3s
+    Calculate DREAD      :f2, after f1, 2s
+
+    section Reporting
+    Generate Reports     :g1, after f2, 3s
+    Upload SARIF         :g2, after g1, 2s
 ```
 
 ---
 
-## Features
+## Five-Dimensional Framework
 
-- **Local-first**: All scanning happens locally; no code uploads to cloud services
-- **Flexible Authentication**: Works with GitHub Token (recommended) OR GitHub CLI
-- **Hybrid Selection**: Filter repos by time (days since update), allowlist file, or both
-- **Patch-Focused**: Prioritizes evidence related to:
-  - PVF_DATE and date/time handling
-  - Oracle/JDBC database connections
-  - Risk scoring and transaction holds
-  - Browser/OS detection and user-agent analysis
-  - Case management and popup UI fields
-  - Time intervals (10m, 30m, 1h, 4h, 24h, 7d)
-- **STRIDE-Based Reports**: Generates structured threat model reports with evidence tables
-- **Tool Integration**: Works with gitleaks (secret scanning) and syft (SBOM) when available
-- **Knowledge-Based**: Uses YAML knowledge bases for extensible threat detection
+tm-scan fuses five complementary security frameworks into a unified threat model:
+
+```mermaid
+graph LR
+    subgraph Dimensions["5-Dimensional Framework"]
+        STRIDE[STRIDE<br/>Spoofing<br/>Tampering<br/>Repudiation<br/>Info Disclosure<br/>DoS<br/>Elevation of Privilege]
+        PASTA[PASTA<br/>Threat Actor<br/>Attack Surface<br/>Attack Vector<br/>Business Impact]
+        LINDDUN[LINDDUN<br/>Linkability<br/>Identifiability<br/>Non-repudiation<br/>Detectability<br/>Disclosure of Info<br/>Unawareness<br/>Non-compliance]
+        CWE[CWE<br/>MITRE Weakness<br/>Enumeration]
+        DREAD[DREAD<br/>Damage<br/>Reproducibility<br/>Exploitability<br/>Affected Users<br/>Discoverability]
+    end
+
+    Evidence[Code Evidence] --> STRIDE
+    Evidence --> PASTA
+    Evidence --> LINDDUN
+    Evidence --> CWE
+    Evidence --> DREAD
+
+    STRIDE --> Report[Unified Report]
+    PASTA --> Report
+    LINDDUN --> Report
+    CWE --> Report
+    DREAD --> Report
+```
+
+### 1. STRIDE Categories
+
+| Category | Description | Example Indicators |
+|----------|-------------|-------------------|
+| **Spoofing** | Impersonation of users or systems | `auth`, `login`, `jwt`, `session` |
+| **Tampering** | Unauthorized data modification | `update`, `delete`, `sql`, `transaction` |
+| **Repudiation** | Denial of actions | Missing audit logs, non-atomic operations |
+| **Information Disclosure** | Data exposure | `secret`, `password`, `api_key`, `token` |
+| **Denial of Service** | Availability impact | Unbounded loops, missing rate limits |
+| **Elevation of Privilege** | Unauthorized privilege gain | `admin`, `escalate`, `sudo`, `role` |
+
+### 2. PASTA Context
+
+| Element | Description | Example |
+|---------|-------------|---------|
+| **Threat Actor** | Who is attacking? | External authenticated user, insider, automated scanner |
+| **Attack Surface** | Where is the entry point? | REST API, GraphQL endpoint, webhook handler |
+| **Attack Vector** | How is the attack delivered? | Manipulated IDs, user-controlled URLs, input payload |
+| **Business Impact** | What is the damage? | Data breach, financial loss, compliance violation |
+
+### 3. LINDDUN Privacy
+
+| Category | Privacy Concern | Detection |
+|----------|-----------------|-----------|
+| **Linkability** | Data can be linked across contexts | Shared identifiers, cross-tenant data access |
+| **Identifiability** | Data can identify individuals | PII in logs, user tables without protection |
+| **Non-repudiation** | Actions cannot be denied | Missing audit trails, unsigned operations |
+| **Detectability** | Data disclosure can be detected | Error messages revealing internal state |
+| **Disclosure of Information** | Unintended data exposure | Debug info, verbose errors |
+| **Unawareness** | Subjects unaware of data use | Hidden data collection, opaque processing |
+| **Non-compliance** | Regulatory violations | Missing consent, inadequate data protection |
+
+### 4. CWE Mapping
+
+Each threat maps to MITRE CWE identifiers for standards compliance:
+- `CWE-89`: SQL Injection
+- `CWE-639`: IDOR (Broken Object Level Authorization)
+- `CWE-918`: Server-Side Request Forgery
+- `CWE-798`: Hardcoded Credentials
+- And 50+ more...
+
+### 5. DREAD Scoring
+
+| Factor | Scale | Weight |
+|--------|-------|--------|
+| **Damage** | 1-10 | How bad is the impact? |
+| **Reproducibility** | 1-10 | How easy is it to reproduce? |
+| **Exploitability** | 1-10 | How much work is required? |
+| **Affected Users** | 1-10 | How many users are impacted? |
+| **Discoverability** | 1-10 | How easy is it to find? |
+
+**Quality Gate:** Average DREAD ≥ 8.0 fails CI and marks SARIF as `error`.
 
 ---
 
-## Detailed Setup
+## Quickstart
 
 ### Prerequisites
 
-1. **macOS** with bash and Python 3.9+
-2. **Git** with SSH access to GitHub (`git@github.com:org/...`)
-3. **GitHub access** (choose one):
-   - **GitHub Token** (recommended) - see Step 1 above
-   - **GitHub CLI** - `brew install gh && gh auth login`
-   - **No auth** - public repos only
+```bash
+# Python 3.9+
+python --version
 
-### Optional Tools
+# GitHub CLI (for local scanning)
+gh --version
 
-These tools enhance scanning but are **not required**:
+# Optional: gitleaks and syft for enhanced scanning
+gitleaks --version
+syft --version
+```
+
+### Installation
 
 ```bash
-# Install gitleaks for secret scanning
-brew install gitleaks
+# Clone repository
+git clone https://github.com/your-org/tm-scan.git
+cd tm-scan
 
-# Install syft for SBOM generation
-brew install syft
+# Install dependencies
+python -m pip install -r requirements.txt
+
+# Make executable
+chmod +x tm-scan
 ```
 
-> If not installed, tm-scan will warn and continue without these features.
-
----
-
-## Usage Examples
-
-### Example 1: Quick Scan of Recently Updated Repos
-
-Scan repos updated in the last 7 days:
+### Local Scan
 
 ```bash
-# Using .env file for auth
-./tm-scan --org mbbgrp --since-days 7 --max-repos 20
+# Scan local directory (recommended for single repo)
+./tm-scan --local-dir . --mode quick --fail-on-critical
+
+# Scan organization repos
+gh auth login
+./tm-scan --org my-org --since-days 30 --max-repos 10
+
+# Dry run (show selected repos without scanning)
+./tm-scan --org my-org --since-days 30 --dry-run
 ```
 
-### Example 2: Scan Specific Repos from Allowlist
+### Output Location
 
-**Step 1:** Create `repos.txt` with one repo per line:
-```bash
-cat > repos.txt << EOF
-payment-service
-user-management
-risk-assessment
-transaction-processor
-case-management-ui
-EOF
-```
-
-**Step 2:** Run scan:
-```bash
-./tm-scan --org mbbgrp --repos-file repos.txt --max-repos 10
-```
-
-### Example 3: Combined Time + Allowlist Filter
-
-Only scan repos from `repos.txt` that were updated in the last 30 days:
-
-```bash
-./tm-scan --org mbbgrp --repos-file repos.txt --since-days 30
-```
-
-### Example 4: Dry Run (Preview Without Cloning)
-
-See which repos would be selected without actually cloning them:
-
-```bash
-./tm-scan --org mbbgrp --since-days 30 --dry-run
-```
-
-Output example:
-```
-============================================================
-Selected 15 repositories for scanning
-============================================================
-  1. risk-scoring-service         [Score:  45] Lang: Java            Updated: 2025-02-10
-  2. transaction-processor        [Score:  40] Lang: Java            Updated: 2025-02-09
-  3. case-management-ui           [Score:  35] Lang: TypeScript      Updated: 2025-02-08
-...
-============================================================
-```
-
-### Example 5: Deep Scan Mode
-
-For more thorough analysis (full git history):
-
-```bash
-./tm-scan --org mbbgrp --since-days 30 --mode deep --depth 0 --max-repos 5
-```
-
-### Example 6: Scan Without Optional Tools
-
-If gitleaks or syft are not installed, skip them:
-
-```bash
-./tm-scan --org mbbgrp --since-days 30 --no-gitleaks --no-sbom --max-repos 20
-```
-
----
-
-## Command-Line Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--org` | `mbbgrp` | GitHub organization name |
-| `--github-token` | `$GITHUB_TOKEN` | GitHub Personal Access Token (or use `.env` file) |
-| `--since-days` | `30` | Only scan repos updated within N days (0 = all time) |
-| `--repos-file` | - | Path to allowlist file (one repo per line) |
-| `--max-repos` | `50` | Maximum number of repos to scan |
-| `--depth` | `1` | Git clone depth (1 = shallow, 0 = full history) |
-| `--workspace-dir` | `~/tm-workspace` | Local clone location |
-| `--output-dir` | `~/tm-output` | Report output location |
-| `--mode` | `quick` | Scan mode: `quick` or `deep` |
-| `--dry-run` | `false` | Print selected repos without cloning |
-| `--no-gitleaks` | `false` | Skip gitleaks scanning |
-| `--no-sbom` | `false` | Skip syft SBOM generation |
-
----
-
-## Output Structure
+All artifacts are stored under `~/tm-output/`:
 
 ```
 ~/tm-output/
-├── run-metadata/
-│   ├── run-config.json         # Configuration snapshot
-│   ├── repo-inventory.json     # All repos discovered in org
-│   ├── selected-repos.txt      # Repos selected for scan (with scores)
-│   └── skipped-repos.txt       # Repos filtered out (archived, old, etc.)
 ├── reports/
 │   └── <repo-name>/
-│       └── <YYYY-MM-DD>/
-│           ├── evidence.json           # Raw structured evidence (JSON)
-│           ├── evidence-summary.md     # Human-readable evidence summary
-│           ├── gitleaks-summary.json   # Secret scan counts (redacted)
-│           ├── sbom-summary.json       # SBOM package summary
-│           └── threatmodel-report.md   # ⭐ Main STRIDE threat model report
+│       └── 2025-01-15/
+│           ├── threatmodel-report.md      # Full report with Mermaid DFD
+│           ├── threatmodel-report.sarif   # GitHub Security import
+│           ├── evidence.json              # Raw findings
+│           ├── evidence-summary.md        # Evidence overview
+│           ├── gitleaks-summary.json      # Secret scan results
+│           └── sbom-summary.json          # Dependency inventory
+├── run-metadata/
+│   ├── run-config.json                   # Scan configuration
+│   ├── repo-inventory.json               # All discovered repos
+│   ├── selected-repos.txt                # Prioritized selection
+│   └── skipped-repos.txt                 # Unselected repos
 └── logs/
-    └── run-20250213_143022.log  # Execution log with timestamps
+    └── run-20250115_143022.log           # Detailed execution log
 ```
 
 ---
 
-## Interpreting Reports
+## CI/CD Integration
 
-### Main Report: `threatmodel-report.md`
+### Workflow File
 
-This is the **primary report** for security review. It contains:
+Create `.github/workflows/tm-scan-agent.yml`:
 
-#### 1. Executive Summary
-- Overall risk level (High/Medium/Low)
-- Total findings counts
-- Secret findings (from gitleaks)
-- Total packages (from SBOM)
+```yaml
+name: tm-scan agentic workflow
 
-#### 2. Asset/Flow Inventory Table
-| Asset/Flow | Confidentiality | Integrity | Availability | Sensitivity | Evidence | Notes |
-|------------|-----------------|-----------|--------------|-------------|----------|-------|
-| User Data (USERS table) | High | High | Medium | High | 5 references | Contains PII |
-| Database (Oracle) | High | High | High | High | 12 references | Check connection security |
+on:
+  pull_request:
+    branches: ["**"]
 
-#### 3. Threat Analysis Table (STRIDE)
-| Threat | STRIDE Category | Likelihood | Impact | Priority | Evidence | Recommended Controls |
-|--------|-----------------|------------|--------|----------|----------|---------------------|
-| PVF_DATE Manipulation | Tampering | High | High | TBD | 8 matches | Server-side validation |
-| Risk Score Manipulation | Tampering | High | High | TBD | 15 matches | Calculate server-side |
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
 
-#### 4. STRIDE Analysis
-Detailed breakdown by category:
-- **Spoofing**: User impersonation risks
-- **Tampering**: Data manipulation risks
-- **Repudiation**: Non-repudiation gaps
-- **Information Disclosure**: Data exposure risks
-- **Denial of Service**: Resource exhaustion
-- **Elevation of Privilege**: Access control bypasses
+jobs:
+  tm-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-#### 5. Recommendations
-Prioritized by severity:
-- **[CRITICAL]** Remove X potential secret(s)
-- **[HIGH]** Review X high-priority code patterns
-- **[MEDIUM]** Verify authentication implementation
-- **[LOW]** Implement comprehensive audit logging
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-#### 6. Questions for Security Reviewers
-Confirmation questions like:
-1. Is PVF_DATE validated server-side?
-2. Are risk scores calculated server-side only?
-3. Are transaction holds enforced in the database?
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-### Evidence Summary: `evidence-summary.md`
+      - name: Run tm-scan (local quick mode)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTIONS: "true"
+        run: |
+          chmod +x tm-scan
+          ./tm-scan --local-dir . --mode quick --fail-on-critical
 
-Supplementary report showing:
-- OpenAPI/Swagger specification files found
-- Database migration files (Flyway, Liquibase)
-- Configuration files (application.yml, .env, etc.)
-- High-priority keyword hits with file locations
-- Authentication/authorization hints
-- Database technology hints (Oracle, MySQL, PostgreSQL, etc.)
-- Risky configuration hints (redacted)
+      - name: Locate SARIF artifact
+        if: success() || failure()
+        run: |
+          SARIF_PATH=$(find "$HOME/tm-output" -name "threatmodel-report.sarif" -print -quit)
+          if [ -z "$SARIF_PATH" ]; then
+            echo "No SARIF file found." && exit 0
+          fi
+          echo "SARIF_FILE=$SARIF_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload SARIF results
+        if: success() || failure()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.SARIF_FILE }}
+
+      - name: Run deterministic PR reviewer
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python scripts/local_pr_reviewer.py
+```
+
+### What Happens in CI?
+
+1. **Checkout** — Gets your PR code
+2. **Scan** — Runs `tm-scan` in local mode
+3. **Quality Gate** — Checks DREAD average
+4. **SARIF Upload** — Sends results to Security tab
+5. **PR Review** — On failure, posts inline comments
 
 ---
 
-## Extending Knowledge Base
+## PR Reviewer Bot
 
-### Adding New Keywords
+The deterministic PR reviewer provides inline feedback without external LLMs:
 
-Edit `knowledge-base/kb-keywords.yaml`:
+### How It Works
+
+```mermaid
+flowchart LR
+    Evidence[evidence.json] --> Match[Match Threats]
+    KB[kb-threats.yaml] --> Match
+
+    Match --> ReviewMsg[reviewer_message]
+    Match --> FixSnippet[auto_fix_snippet]
+
+    PRDiff[PR Diff] --> Locate[Find Keywords in Diff]
+    Locate --> Positions[Line Positions]
+
+    ReviewMsg --> Comment[Inline Comment]
+    FixSnippet --> Comment
+    Positions --> Comment
+
+    Comment --> API[GitHub API]
+    API --> PR[Pull Request]
+```
+
+### Comment Format
+
+Each inline comment includes:
+
+```markdown
+**TM-API-001 - Broken Object Level Authorization (IDOR)**
+
+Verify per-object authorization on every ID-bearing endpoint. Enforce tenant scoping and ownership checks server-side.
+
+Suggested fix:
+```
+# Pseudocode: enforce ownership check
+def fetch_scoped_object(user, object_id):
+    obj = repo.fetch(object_id)
+    if not obj:
+        raise NotFound()
+    if obj.tenant_id != user.tenant_id:
+        raise Forbidden("unauthorized object access")
+    return obj
+```
+```
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Keyword-Based** | Locates specific keywords in added lines (`+` prefix) |
+| **Rule-Based** | Matches complex regex patterns for code constructs |
+| **Deduplicated** | Merges identical comments to avoid spam |
+| **Context-Aware** | Only comments on relevant PR changes |
+
+---
+
+## Configuration
+
+### Command-Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--org` | GitHub organization name | `mbbgrp` |
+| `--since-days` | Filter repos updated within N days | `30` |
+| `--repos-file` | Path to allowlist file (one repo per line) | None |
+| `--max-repos` | Maximum repositories to scan | `50` |
+| `--depth` | Git clone depth (0 = full, 1 = shallow) | `1` |
+| `--mode` | Scan mode: `quick` or `deep` | `quick` |
+| `--local-dir` | Scan local directory (skip inventory/clone) | None |
+| `--fail-on-critical` | Exit non-zero if avg DREAD ≥ 8.0 | `false` |
+| `--no-gitleaks` | Skip gitleaks secret scanning | `false` |
+| `--no-sbom` | Skip syft SBOM generation | `false` |
+| `--pdf` | Generate PDF report | `false` |
+| `--github-token` | Override GitHub token | Auto-detected |
+| `--github-api-url` | GitHub API base URL (Enterprise) | `https://api.github.com` |
+| `--workspace-dir` | Local clone location | `~/tm-workspace` |
+| `--output-dir` | Report output location | `~/tm-output` |
+| `--dry-run` | Show selection without scanning | `false` |
+
+### Authentication Priority
+
+tm-scan uses a **hybrid auth model** with fallback priority:
+
+1. **CLI argument** `--github-token`
+2. **Environment variable** `GITHUB_TOKEN` (CI)
+3. **GitHub CLI** `gh auth token` (local)
+4. **Unauthenticated** (public repos only)
+
+In GitHub Actions, `GITHUB_TOKEN` is automatically available.
+
+### GitHub Enterprise
+
+For GitHub Enterprise Server:
+
+```bash
+# Via environment variable
+export GITHUB_API_URL="https://github.example.com"
+./tm-scan --org my-org
+
+# Via CLI argument
+./tm-scan --org my-org --github-api-url "https://github.example.com/api/v3"
+```
+
+---
+
+## Outputs
+
+### 1. Markdown Report (`threatmodel-report.md`)
+
+Comprehensive report with:
+- Executive summary with risk level
+- Mermaid DFD architecture diagram
+- STRIDE distribution table
+- Asset/flow inventory with CIA triad
+- Detailed threat models per finding
+- Evidence-backed recommendations
+- Questions for security reviewers
+
+### 2. SARIF Report (`threatmodel-report.sarif``
+
+Standards-compliant format for:
+- GitHub Security tab integration
+- PR check annotations
+- Third-party tool consumption
+- Audit trail generation
+
+```json
+{
+  "$schema": "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [{
+    "tool": {
+      "driver": {
+        "name": "tm-scan",
+        "rules": [...]
+      }
+    },
+    "results": [...]
+  }]
+}
+```
+
+### 3. Evidence JSON (`evidence.json`)
+
+Machine-readable findings for:
+- Downstream automation
+- Trend analysis
+- Custom reporting
+- Data integrations
+
+```json
+{
+  "repo_name": "example-app",
+  "scan_timestamp": "2025-01-15",
+  "keyword_hits": [...],
+  "rule_hits": [...],
+  "auth_hints": [...],
+  "db_hints": [...],
+  "risky_config_hints": [...]
+}
+```
+
+### 4. PDF Report (optional)
+
+Rendered PDF with:
+- Professional formatting
+- Page breaks between sections
+- Mermaid diagram rendering
+- Print-friendly layout
+
+---
+
+## Knowledge Base
+
+The knowledge base consists of three YAML files:
+
+### kb-threats.yaml
+
+Threat definitions with full 5-D context:
+
+```yaml
+threats:
+  - id: "TM-API-001"
+    name: "Broken Object Level Authorization (IDOR)"
+    stride_category: "Elevation of Privilege"
+    linddun_category: "Unawareness"
+    keywords: ["/v1/", "id=", "findById"]
+    compliance:
+      cwe_id: "CWE-639"
+      owasp_api: "API1:2023"
+    pasta_context:
+      threat_actor: "External authenticated user"
+      attack_surface: "REST endpoints"
+      attack_vector: "Manipulated IDs"
+    dread_score:
+      damage: 9
+      reproducibility: 8
+      exploitability: 8
+      affected_users: 9
+      discoverability: 7
+    reviewer_message: "Verify per-object authorization..."
+    auto_fix_snippet: |
+      def fetch_scoped_object(user, object_id):
+          # ...
+```
+
+### kb-rules.yaml
+
+Advanced regex-based detection rules:
+
+```yaml
+rules:
+  - id: "vuln-sqli-concatenation"
+    category: "injection"
+    severity: "CRITICAL"
+    cwe: "CWE-89"
+    target_extensions: [".java", ".js", ".py"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(SELECT|UPDATE).*?(FROM|INTO)"
+      - regex: "(\\+.*?|f\".*?\\{.*?\\})"
+    not_patterns:
+      - regex: "(?i)(prepareStatement|bindParam)"
+```
+
+### kb-keywords.yaml
+
+Simple keyword-based indicators:
 
 ```yaml
 patch_specific:
-  - keyword: "YOUR_FEATURE"
+  - keyword: "risk_score"
     category: "business_logic"
     priority: "high"
-    description: "Your feature description"
+    description: "Risk score calculation"
 
-authentication:
-  - keyword: "your_auth_method"
+authn:
+  - keyword: "jwt"
     category: "authn"
-    priority: "medium"
-    description: "Authentication method description"
+    priority: "high"
+    description: "JWT token handling"
 ```
 
-### Adding New Threats
+---
+
+## Development
+
+### Project Structure
+
+```
+tm-scan/
+├── tm-scan                 # CLI entry point
+├── requirements.txt        # Python dependencies
+├── src/
+│   ├── __init__.py        # Package initialization
+│   ├── config.py          # Configuration handling
+│   ├── inventory.py       # GitHub repository inventory
+│   ├── selector.py        # Repository selection/prioritization
+│   ├── cloner.py          # Git clone/update operations
+│   ├── scanner.py         # Evidence discovery scanner
+│   ├── gitleaks_wrapper.py # Secret scanning wrapper
+│   ├── sbom_wrapper.py    # SBOM generation wrapper
+│   ├── reporter.py        # Threat model report generation
+│   └── report_pdf.py      # PDF report rendering
+├── scripts/
+│   └── local_pr_reviewer.py # Deterministic PR reviewer
+├── .github/workflows/
+│   └── tm-scan-agent.yml  # CI/CD workflow
+└── knowledge-base/
+    ├── kb-threats.yaml    # Threat definitions
+    ├── kb-rules.yaml      # Detection rules
+    └── kb-keywords.yaml   # Keyword indicators
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+python -m pytest tests/
+
+# Run with coverage
+python -m pytest --cov=src tests/
+```
+
+### Adding Custom Threats
 
 Edit `knowledge-base/kb-threats.yaml`:
 
 ```yaml
 threats:
-  - id: "TM-NEW-001"
-    name: "Your Threat Name"
+  - id: "TM-CUSTOM-001"
+    name: "Your Custom Threat"
     stride_category: "Tampering"
-    description: "Threat description"
-    default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["keyword1", "keyword2"]
-    recommended_controls:
-      - "Control 1"
-      - "Control 2"
-    questions_to_confirm:
-      - "Question 1?"
-      - "Question 2?"
+    keywords: ["your_keyword"]
+    compliance:
+      cwe_id: "CWE-XXX"
+    dread_score:
+      damage: 7
+      reproducibility: 6
+      # ... (minimum required fields)
 ```
 
----
+### Adding Detection Rules
 
-## Redaction Policy
+Edit `knowledge-base/kb-rules.yaml`:
 
-This tool **redacts all sensitive information**:
-
-- ✅ **No code snippets** in reports
-- ✅ **No secret values** in gitleaks output (counts only)
-- ✅ **URLs truncated** or hashed
-- ✅ **No tokens, passwords**, or connection strings
-
-Example redaction:
-```
-Database URL: jdbc:oracle://<REDACTED>@host/...
-```
-
----
-
-## Troubleshooting
-
-### "Permission denied (publickey)"
-
-**Problem**: SSH key not configured for GitHub
-
-**Solution**:
-```bash
-# Test SSH connection
-ssh -T git@github.com
-
-# If fails, add SSH key to GitHub:
-# 1. Generate key: ssh-keygen -t ed25519
-# 2. Copy key: cat ~/.ssh/id_ed25519.pub
-# 3. Add to: https://github.com/settings/keys
-```
-
-### "Could not fetch repos"
-
-**Problem**: GitHub authentication failed
-
-**Solutions**:
-1. Check token has `repo` scope
-2. Verify organization name is correct
-3. Check token hasn't expired:
-```bash
-curl -H "Authorization: token YOUR_TOKEN" https://api.github.com/user
-```
-
-### "Tool gitleaks not found"
-
-**Solution**: This is a warning, not an error. The tool will continue.
-- To install: `brew install gitleaks`
-- Or skip: `./tm-scan --no-gitleaks ...`
-
-### "Too many repos selected"
-
-**Problem**: Scan would take too long
-
-**Solutions**:
-```bash
-# Reduce number of repos
-./tm-scan --org mbbgrp --since-days 7 --max-repos 10
-
-# Use allowlist file
-./tm-scan --org mbbgrp --repos-file repos.txt
-```
-
-### "Python module not found"
-
-**Solution**:
-```bash
-pip install -r requirements.txt
-```
-
-Required packages:
-- `pyyaml` - YAML parsing
-- `requests` - HTTP requests
-
----
-
-## Advanced Usage
-
-### Custom Output Directory
-
-```bash
-./tm-scan --org mbbgrp --output-dir ~/my-reports --since-days 30
-```
-
-### Full History Deep Dive
-
-```bash
-./tm-scan --org mbbgrp --mode deep --depth 0 --max-repos 3
-```
-
-### Scan All Repos Regardless of Age
-
-```bash
-./tm-scan --org mbbgrp --since-days 0 --max-repos 100
-```
-
-### Cron Job for Regular Scans
-
-```bash
-# Add to crontab: crontab -e
-# Run every Monday at 2 AM
-0 2 * * 1 cd /path/to/tm-scan && ./tm-scan --org mbbgrp --since-days 7 --max-repos 50
+```yaml
+rules:
+  - id: "custom-rule-001"
+    category: "your_category"
+    severity: "HIGH"
+    cwe: "CWE-XXX"
+    target_extensions: [".js", ".ts"]
+    patterns:
+      - regex: "your_pattern_here"
 ```
 
 ---
 
 ## License
 
-Internal use tool for mbbgrp organization.
+See `LICENSE` file for details.
 
 ---
 
-## Getting Help
+## Contributing
 
-1. Check this README first
-2. Review `QUICKSTART.md` for 5-minute setup
-3. Check logs: `~/tm-output/logs/run-*.log`
-4. Run with `--dry-run` to preview selection
-5. Use `--help` for command-line options
+Contributions are welcome! Please:
 
-```bash
-./tm-scan --help
-```
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+---
+
+## Acknowledgments
+
+- **STRIDE** — Microsoft threat modeling framework
+- **PASTA** — Risk-based threat modeling methodology
+- **LINDDUN** — Privacy threat modeling framework
+- **CWE** — MITRE Common Weakness Enumeration
+- **DREAD** — Risk assessment methodology
+- **Gitleaks** — Secret scanning tool
+- **Syft** — SBOM generation tool
+
+---
+
+<div align="center">
+
+**tm-scan** — Automated threat modeling for enterprise security
+
+[GitHub](https://github.com/your-org/tm-scan) • [Issues](https://github.com/your-org/tm-scan/issues) • [Documentation](https://github.com/your-org/tm-scan/wiki)
+
+</div>

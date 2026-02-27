@@ -1,379 +1,840 @@
-# Knowledge Base: Threat Patterns
-# STRIDE-based threat library for threat modeling
+# Knowledge Base: Omni-Stack Enterprise Threat Patterns (Deterministic Agentic)
+# Schema per threat:
+# - id, name, stride_category, linddun_category (if applicable), description
+# - default_likelihood, default_impact
+# - keywords (strings)
+# - compliance: cwe_id, owasp_api
+# - pasta_context: threat_actor, attack_surface, attack_vector, business_impact
+# - dread_score: damage, reproducibility, exploitability, affected_users, discoverability (1-10 ints)
+# - reviewer_message, auto_fix_snippet (agnostic or multi-language pseudocode)
+# - recommended_controls, questions_to_confirm
 
 threats:
-  # SPOOFING threats
-  - id: "TM-S-001"
-    name: "User Impersonation"
-    stride_category: "Spoofing"
-    description: "Attacker impersonates legitimate user to gain unauthorized access"
-    default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["login", "authenticate", "jwt", "session"]
-    recommended_controls:
-      - "Implement multi-factor authentication (MFA)"
-      - "Use strong session management with secure cookies"
-      - "Implement proper JWT validation and signature verification"
-      - "Consider adding device fingerprinting"
-    questions_to_confirm:
-      - "Is MFA implemented for sensitive operations?"
-      - "Are sessions properly invalidated on logout?"
-      - "Is JWT signature validation enforced?"
-
-  - id: "TM-S-002"
-    name: "API Endpoint Spoofing"
-    stride_category: "Spoofing"
-    description: "Attacker spoofs legitimate API endpoint to intercept requests"
-    default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["@RestController", "app.get", "openapi", "swagger"]
-    recommended_controls:
-      - "Enforce HTTPS for all API endpoints"
-      - "Implement API authentication (API keys, OAuth2)"
-      - "Use request signing for sensitive operations"
-      - "Implement CORS policies correctly"
-    questions_to_confirm:
-      - "Is HTTPS enforced for all endpoints?"
-      - "Is authentication required on all endpoints?"
-      - "Are API keys/rotated regularly?"
-
-  # TAMPERING threats
-  - id: "TM-T-001"
-    name: "PVF_DATE Manipulation"
-    stride_category: "Tampering"
-    description: "Attacker manipulates date fields to bypass transaction validation or time-based controls"
+  - id: "TM-API-001"
+    name: "Broken Object Level Authorization (IDOR)"
+    stride_category: "Elevation of Privilege"
+    linddun_category: "Unawareness"
+    description: "API exposes object identifiers without enforcing per-object authorization, enabling cross-tenant data access."
     default_likelihood: "High"
     default_impact: "High"
-    keywords: ["PVF_DATE", "date", "timestamp", "previous_review", "previous_deny", "hold_transaction"]
+    keywords: ["/v1/", "id=", "objectId", "findById", "getById", "axios.get", "GET /", "/graphql", "nodeId"]
+    compliance:
+      cwe_id: "CWE-639"
+      owasp_api: "API1:2023 Broken Object Level Authorization"
+    pasta_context:
+      threat_actor: "External authenticated user"
+      attack_surface: "REST/GraphQL object endpoints"
+      attack_vector: "Manipulated IDs or GUIDs in path/query/body"
+      business_impact: "Cross-tenant data exposure and privacy breach"
+    dread_score:
+      damage: 9
+      reproducibility: 8
+      exploitability: 8
+      affected_users: 9
+      discoverability: 7
+    reviewer_message: "Verify per-object authorization on every ID-bearing endpoint. Enforce tenant scoping and ownership checks server-side."
+    auto_fix_snippet: |
+      # Pseudocode: enforce ownership check
+      def fetch_scoped_object(user, object_id):
+          obj = repo.fetch(object_id)
+          if not obj:
+              raise NotFound()
+          if obj.tenant_id != user.tenant_id:
+              raise Forbidden("unauthorized object access")
+          return obj
     recommended_controls:
-      - "Validate dates on server-side (never trust client input)"
-      - "Use server-generated timestamps for critical operations"
-      - "Implement date range validation"
-      - "Log all date modifications with audit trail"
+      - "Enforce ownership/tenant checks at controller/service layer"
+      - "Use scoped queries (WHERE tenant_id = ? AND id = ?)"
+      - "Add ABAC/RBAC guards around object resources"
     questions_to_confirm:
-      - "Is PVF_DATE validated server-side?"
-      - "Are date ranges enforced on the backend?"
-      - "Is date modification logged?"
+      - "Are IDs scoped to tenant/account in every DAO query?"
+      - "Is authorization enforced even if the attacker guesses valid IDs?"
 
-  - id: "TM-T-002"
-    name: "Risk Score Manipulation"
+  - id: "TM-API-002"
+    name: "Server-Side Request Forgery (SSRF) to Internal/Metadata Services"
+    stride_category: "Information Disclosure"
+    linddun_category: "Linkability"
+    description: "Unvalidated outbound HTTP requests enable access to internal services and cloud metadata endpoints."
+    default_likelihood: "Medium"
+    default_impact: "Critical"
+    keywords: ["axios.get", "requests.get", "http.Get(", "fetch(", "RestTemplate", "HttpClient", "169.254.169.254", "metadata.google.internal", "latest/meta-data", "file://", "gopher://"]
+    compliance:
+      cwe_id: "CWE-918"
+      owasp_api: "API8:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "URL fetchers, webhooks, importers, image/document fetchers"
+      attack_vector: "User-controlled URL reaching internal IPs/hostnames"
+      business_impact: "Credential exfiltration, internal network pivot, data breach"
+    dread_score:
+      damage: 10
+      reproducibility: 7
+      exploitability: 8
+      affected_users: 9
+      discoverability: 6
+    reviewer_message: "Guard all outbound fetchers with allowlists and block link-local/private ranges (including metadata IPs)."
+    auto_fix_snippet: |
+      # Pseudocode: URL allowlist + IP range blocking
+      def safe_fetch(url):
+          parsed = parse_url(url)
+          if parsed.scheme not in ["https"]:
+              raise Forbidden("scheme not allowed")
+          ip = resolve_dns(parsed.host)
+          if ip_in_private_ranges(ip) or ip_in_link_local(ip):
+              raise Forbidden("internal destinations blocked")
+          if not host_is_allowlisted(parsed.host):
+              raise Forbidden("host not allowlisted")
+          return http_get(url, timeout_seconds=2, follow_redirects=False)
+    recommended_controls:
+      - "Egress proxy with ACLs for outbound traffic"
+      - "DNS/IP resolution + private range blocking"
+      - "Disable redirects or re-validate after redirects"
+    questions_to_confirm:
+      - "Do we block 169.254.169.254 and other metadata endpoints?"
+      - "Do we validate final destination after redirects?"
+
+  - id: "TM-API-003"
+    name: "SQL Injection via String Concatenation / Unsafe Query Construction"
     stride_category: "Tampering"
-    description: "Attacker manipulates risk_score or max_risk_score to bypass risk checks"
+    linddun_category: "Non-repudiation"
+    description: "Concatenating untrusted input into SQL queries allows injection, data exfiltration, and corruption."
+    default_likelihood: "High"
+    default_impact: "Critical"
+    keywords: ["executeQuery", "Statement", "SELECT * FROM", "WHERE " , "cursor.execute", "fmt.Sprintf(\"SELECT", "f\"SELECT", "format(", "QueryRaw", "FromSqlRaw", "sequelize.query", "$queryRaw"]
+    compliance:
+      cwe_id: "CWE-89"
+      owasp_api: "API8:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "Search/filter endpoints, admin panels, report generators"
+      attack_vector: "Injected payloads via query params/body fields"
+      business_impact: "PII leakage, financial loss, database compromise"
+    dread_score:
+      damage: 10
+      reproducibility: 9
+      exploitability: 8
+      affected_users: 9
+      discoverability: 8
+    reviewer_message: "Replace string-built SQL with parameterized queries/prepared statements. Ensure ORM raw queries are parameterized."
+    auto_fix_snippet: |
+      # Examples (multi-language pseudocode)
+      # Python:
+      cursor.execute("SELECT * FROM accounts WHERE id = %s", (user_id,))
+      # Java:
+      ps = conn.prepareStatement("SELECT * FROM accounts WHERE id = ?");
+      ps.setLong(1, userId);
+      # Node:
+      db.query("SELECT * FROM accounts WHERE id = $1", [userId]);
+    recommended_controls:
+      - "Prepared statements everywhere"
+      - "Centralize query building; ban raw concatenation by linting"
+      - "Least-privileged DB roles"
+    questions_to_confirm:
+      - "Do any queries build SQL via concat/format/interpolation?"
+      - "Are raw ORM queries audited and parameterized?"
+
+  - id: "TM-API-004"
+    name: "NoSQL Injection / Query Operator Injection"
+    stride_category: "Tampering"
+    linddun_category: "Unawareness"
+    description: "Untrusted JSON objects are used directly in NoSQL queries, enabling operator injection (e.g., $ne, $gt)."
     default_likelihood: "High"
     default_impact: "High"
-    keywords: ["risk_score", "max_risk_score", "riskScore", "maxRiskScore"]
+    keywords: ["$ne", "$gt", "$where", "findOne(", "collection.find(", "mongoose", "BsonDocument", "Filters.eq", "prisma.findMany", "where:"]
+    compliance:
+      cwe_id: "CWE-943"
+      owasp_api: "API8:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "MongoDB/Document DB query endpoints"
+      attack_vector: "Injected query operators via JSON body or params"
+      business_impact: "Auth bypass, unauthorized reads, data leakage"
+    dread_score:
+      damage: 8
+      reproducibility: 9
+      exploitability: 8
+      affected_users: 8
+      discoverability: 7
+    reviewer_message: "Do not pass user-controlled objects into NoSQL filters. Enforce schemas and allowlisted fields/types."
+    auto_fix_snippet: |
+      # Pseudocode: allowlist-based query building
+      allowed_fields = {"email", "user_id", "status"}
+      def build_filter(user_input):
+          f = {}
+          for k, v in user_input.items():
+              if k in allowed_fields and is_scalar(v):
+                  f[k] = v
+          return f
+      results = collection.find(build_filter(request.json))
     recommended_controls:
-      - "Calculate risk scores server-side only"
-      - "Encrypt risk score data in transit and at rest"
-      - "Implement integrity checks (HMAC) for risk data"
-      - "Log all risk score changes"
+      - "Schema validation (JSON Schema / Pydantic / Joi)"
+      - "Reject query operators from client input"
+      - "Use typed query builders"
     questions_to_confirm:
-      - "Is risk_score calculated on the server?"
-      - "Is risk score data integrity verified?"
-      - "Are risk score changes audited?"
+      - "Can a client send nested objects into query filters?"
+      - "Are query fields allowlisted and typed?"
 
-  - id: "TM-T-003"
-    name: "Transaction Hold Bypass"
-    stride_category: "Tampering"
-    description: "Attacker bypasses hold_transaction controls to process prohibited transactions"
+  - id: "TM-API-005"
+    name: "GraphQL Authorization Bypass (Resolver-Level Missing Checks)"
+    stride_category: "Elevation of Privilege"
+    linddun_category: "Unawareness"
+    description: "GraphQL resolvers expose sensitive fields or objects without per-field/per-object authorization."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["type Query", "type Mutation", "resolver", "context.user", "graphql", "apollo-server", "@auth", "@Authorized", "schema.graphql", "GraphQLObjectType"]
+    compliance:
+      cwe_id: "CWE-285"
+      owasp_api: "API1:2023 Broken Object Level Authorization"
+    pasta_context:
+      threat_actor: "External authenticated user"
+      attack_surface: "GraphQL endpoint and resolvers"
+      attack_vector: "Querying unauthorized fields/objects; ID tampering in resolver args"
+      business_impact: "Cross-tenant data exposure and privacy breach"
+    dread_score:
+      damage: 9
+      reproducibility: 8
+      exploitability: 7
+      affected_users: 8
+      discoverability: 7
+    reviewer_message: "Enforce authz in every resolver and field that returns tenant-scoped data. Do not rely on UI to hide fields."
+    auto_fix_snippet: |
+      # Pseudocode: resolver auth guard
+      def resolve_user(parent, args, ctx):
+          require_authenticated(ctx)
+          user = repo.fetch_user(args["id"])
+          if user.tenant_id != ctx.user.tenant_id:
+              raise Forbidden()
+          return user
+    recommended_controls:
+      - "Central authz middleware for resolvers"
+      - "Field-level auth directives"
+      - "Disable GraphQL introspection in production where appropriate"
+    questions_to_confirm:
+      - "Do all resolvers enforce tenant scoping?"
+      - "Is introspection enabled in production?"
+
+  - id: "TM-API-006"
+    name: "XML External Entity (XXE) / Unsafe XML Parsing"
+    stride_category: "Information Disclosure"
+    linddun_category: "Linkability"
+    description: "XML parsers with DTD/external entities enabled allow file disclosure or SSRF via entity expansion."
     default_likelihood: "Medium"
     default_impact: "High"
-    keywords: ["hold_transaction", "holdTransaction", "previous_review", "previousDeny"]
+    keywords: ["DocumentBuilderFactory", "setExpandEntityReferences", "XMLInputFactory", "SAXParserFactory", "DOCTYPE", "<!ENTITY", "lxml", "xml.etree", "XmlReaderSettings", "DtdProcessing"]
+    compliance:
+      cwe_id: "CWE-611"
+      owasp_api: "API8:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "XML upload endpoints, SAML, SOAP, legacy integrations"
+      attack_vector: "Crafted XML with external entities"
+      business_impact: "File disclosure, SSRF pivot, credential exposure"
+    dread_score:
+      damage: 8
+      reproducibility: 7
+      exploitability: 7
+      affected_users: 7
+      discoverability: 6
+    reviewer_message: "Disable DTD/external entities and use hardened XML parsers. Treat XML as hostile input."
+    auto_fix_snippet: |
+      # Pseudocode: secure XML parsing
+      # Java: disable DTD
+      factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+      factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+      factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+      # .NET:
+      settings.DtdProcessing = Prohibit
     recommended_controls:
-      - "Enforce holds server-side with no client override"
-      - "Implement hold state with database constraints"
-      - "Require approval workflow for held transactions"
-      - "Log all hold bypass attempts"
+      - "Harden XML parser configuration"
+      - "Prefer JSON where possible"
+      - "Input size limits to prevent entity expansion DoS"
     questions_to_confirm:
-      - "Are transaction holds enforced server-side?"
-      - "Can holds be bypassed via client manipulation?"
-      - "Is hold state persisted in database?"
+      - "Do we parse XML from untrusted sources (uploads, SAML, SOAP)?"
+      - "Are DTD/external entities explicitly disabled?"
 
-  - id: "TM-T-004"
-    name: "Time Interval Bypass"
-    stride_category: "Tampering"
-    description: "Attacker manipulates time intervals (10m, 30m, 1h, etc.) to bypass rate limits or time-based controls"
-    default_likelihood: "Medium"
-    default_impact: "Medium"
-    keywords: ["10m", "30m", "1h", "4h", "24h", "7d", "time_interval"]
-    recommended_controls:
-      - "Use server-side time for all interval calculations"
-      - "Store interval state in database, not client"
-      - "Implement monotonic counters for rate limiting"
-      - "Use Redis or similar for distributed time tracking"
-    questions_to_confirm:
-      - "Are time intervals calculated server-side?"
-      - "Is interval state persisted?"
-      - "Can intervals be manipulated via client input?"
-
-  # REPUDIATION threats
-  - id: "TM-R-001"
-    name: "Non-Repudiation of Actions"
-    stride_category: "Repudiation"
-    description: "User denies performing action due to insufficient audit trail"
-    default_likelihood: "Medium"
-    default_impact: "Medium"
-    keywords: ["USERS", "login", "authenticate", "transaction"]
-    recommended_controls:
-      - "Implement comprehensive audit logging"
-      - "Log user ID, timestamp, action, and outcome"
-      - "Use append-only logs or WORM storage"
-      - "Include digital signatures for critical actions"
-    questions_to_confirm:
-      - "Are all user actions logged?"
-      - "Do logs include user identity and timestamp?"
-      - "Are logs protected against tampering?"
-
-  # INFORMATION DISCLOSURE threats
-  - id: "TM-I-001"
-    name: "User Data Exposure"
-    stride_category: "Information Disclosure"
-    description: "Sensitive user data from USERS table exposed through API or logs"
+  - id: "TM-AUTH-001"
+    name: "Weak JWT Verification (alg=none, HS256 misuse, missing claims validation)"
+    stride_category: "Spoofing"
+    linddun_category: "Linkability"
+    description: "JWTs are accepted without signature verification, with alg=none, weak HS256 secrets, or missing aud/iss/exp validation."
     default_likelihood: "Medium"
     default_impact: "High"
-    keywords: ["USERS", "SELECT", "executeQuery", "console.log", "logger."]
+    keywords: ["jwt.decode", "jsonwebtoken.verify", "alg\": \"none", "HS256", "RS256", "kid", "verify=False", "options={\"verify_signature\": False}", "skipSignatureValidation"]
+    compliance:
+      cwe_id: "CWE-347"
+      owasp_api: "API2:2023 Broken Authentication"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "JWT auth middleware"
+      attack_vector: "Forged tokens, algorithm confusion, replay of expired tokens"
+      business_impact: "Account takeover and privilege escalation"
+    dread_score:
+      damage: 9
+      reproducibility: 8
+      exploitability: 8
+      affected_users: 8
+      discoverability: 7
+    reviewer_message: "Strictly verify JWT signatures, pin algorithms, and validate issuer/audience/expiry. Do not accept alg=none."
+    auto_fix_snippet: |
+      # Pseudocode: strict JWT validation
+      def verify_jwt(token):
+          header = jwt_parse_header(token)
+          if header.alg not in ["RS256", "ES256"]:
+              raise Unauthorized("disallowed alg")
+          key = jwks_fetch_and_select(header.kid)
+          claims = jwt_verify(token, key=key, algorithms=["RS256", "ES256"])
+          require(claims.exp > now())
+          require(claims.iss in ALLOWED_ISSUERS)
+          require(claims.aud in ALLOWED_AUDIENCES)
+          return claims
     recommended_controls:
-      - "Implement field-level access control"
-      - "Redact sensitive fields in logs"
-      - "Use parameterized queries to prevent SQL injection"
-      - "Implement data encryption at rest"
+      - "Use asymmetric signing (RS256/ES256) for enterprise services"
+      - "Rotate keys via KMS/Vault; enforce JWKS caching and pinning"
+      - "Validate exp/nbf/iss/aud/sub consistently"
     questions_to_confirm:
-      - "Are sensitive fields redacted in logs?"
-      - "Is database access restricted by principle of least privilege?"
-      - "Is user data encrypted at rest?"
+      - "Are algorithms pinned and 'none' rejected?"
+      - "Do we validate aud/iss and expiration on every request?"
 
-  - id: "TM-I-002"
-    name: "Database Connection String Exposure"
-    stride_category: "Information Disclosure"
-    description: "Database credentials exposed in config or connection strings"
-    default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["connectionString", "connection_string", "jdbc:", "mysql://", "postgres://", "oracle://"]
-    recommended_controls:
-      - "Use environment variables for credentials"
-      - "Implement secret management (HashiCorp Vault, AWS Secrets Manager)"
-      - "Rotate credentials regularly"
-      - "Use least privilege database accounts"
-    questions_to_confirm:
-      - "Are credentials stored in environment variables?"
-      - "Is a secret manager used?"
-      - "Are database credentials rotated?"
-
-  - id: "TM-I-003"
-    name: "Browser/OS Fingerprinting Data Exposure"
-    stride_category: "Information Disclosure"
-    description: "User agent and OS data collected without proper disclosure or consent"
-    default_likelihood: "Low"
-    default_impact: "Medium"
-    keywords: ["user-agent", "browser_type", "browser_version", "os_version", "User-Agent"]
-    recommended_controls:
-      - "Implement privacy policy disclosure"
-      - "Obtain user consent for data collection"
-      - "Minimize collected data"
-      - "Comply with GDPR/CCPA requirements"
-    questions_to_confirm:
-      - "Is fingerprinting disclosed to users?"
-      - "Is user consent obtained?"
-      - "Is data collection minimized?"
-
-  - id: "TM-I-004"
-    name: "Case Management Data Exposure"
-    stride_category: "Information Disclosure"
-    description: "Sensitive case data exposed through popup fields or UI"
-    default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["case_management", "caseManagement", "popup", "popup_fields", "popupFields"]
-    recommended_controls:
-      - "Implement field-level authorization"
-      - "Mask sensitive fields in UI"
-      - "Audit access to case data"
-      - "Implement data minimization"
-    questions_to_confirm:
-      - "Are popup fields protected by authorization?"
-      - "Is sensitive case data masked?"
-      - "Is case data access audited?"
-
-  # DENIAL OF SERVICE threats
-  - id: "TM-D-001"
-    name: "API Rate Limiting Bypass"
+  - id: "TM-AUTH-002"
+    name: "Credential Stuffing / Missing Rate Limiting on Auth Endpoints"
     stride_category: "Denial of Service"
-    description: "Attacker bypasses rate limits to exhaust API resources"
-    default_likelihood: "Medium"
-    default_impact: "Medium"
-    keywords: ["@GetMapping", "app.post", "router.", "1h", "24h"]
+    linddun_category: "Detectability"
+    description: "Authentication endpoints lack throttling and abuse protections, enabling credential stuffing and resource exhaustion."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["/login", "/signin", "/token", "authenticate", "rateLimiter", "bucket4j", "429", "Too many requests", "Recaptcha", "lockout"]
+    compliance:
+      cwe_id: "CWE-307"
+      owasp_api: "API4:2023 Unrestricted Resource Consumption"
+    pasta_context:
+      threat_actor: "External attacker (botnet)"
+      attack_surface: "Login, token refresh, password reset, OTP endpoints"
+      attack_vector: "High-rate brute force and credential stuffing"
+      business_impact: "Account takeover, auth outage, infra cost spike"
+    dread_score:
+      damage: 8
+      reproducibility: 9
+      exploitability: 8
+      affected_users: 8
+      discoverability: 8
+    reviewer_message: "Add IP + account-based rate limits, progressive delays, anomaly detection, and step-up challenges."
+    auto_fix_snippet: |
+      # Pseudocode: combined throttling
+      def login(request):
+          if not rate_limit.allow(ip=request.ip, key="login_ip", per_minute=30):
+              return error(429)
+          if not rate_limit.allow(key=f"login_user:{request.username}", per_minute=10):
+              return error(429)
+          if is_anomalous(request):
+              require_captcha()
+          return authenticate(request)
     recommended_controls:
-      - "Implement rate limiting per user/IP"
-      - "Use Redis for distributed rate limiting"
-      - "Set appropriate request timeouts"
-      - "Implement circuit breakers"
+      - "IP + account throttling"
+      - "Credential stuffing detection (known breached passwords, velocity checks)"
+      - "Step-up MFA for risky logins"
     questions_to_confirm:
-      - "Is rate limiting implemented?"
-      - "Is rate limiting distributed?"
-      - "Are timeouts configured?"
+      - "Do we throttle by IP and by account identifier?"
+      - "Do we have lockout/backoff and 2FA/step-up flows?"
 
-  - id: "TM-D-002"
-    name: "Resource Exhaustion via Queries"
-    stride_category: "Denial of Service"
-    description: "Attacker sends expensive queries to exhaust database resources"
+  - id: "TM-CRYPTO-001"
+    name: "Broken / Weak Cryptography (MD5/SHA1/DES/ECB) for Secrets or Sensitive Data"
+    stride_category: "Information Disclosure"
+    linddun_category: "Linkability"
+    description: "Use of outdated hashing/encryption algorithms or insecure modes enables offline cracking and data compromise."
     default_likelihood: "Medium"
     default_impact: "High"
-    keywords: ["SELECT", "executeQuery", "Statement", "PreparedStatement"]
+    keywords: ["MD5", "SHA1", "DES", "RC4", "ECB", "MessageDigest.getInstance(\"MD5\")", "hashlib.md5", "CryptoJS.MD5", "AES/ECB", "Cipher.getInstance(\"DES", "pbkdf2", "bcrypt", "argon2"]
+    compliance:
+      cwe_id: "CWE-327"
+      owasp_api: "API2:2023 Broken Authentication"
+    pasta_context:
+      threat_actor: "External attacker or insider"
+      attack_surface: "Password storage, token derivation, encryption at rest, backups"
+      attack_vector: "Offline cracking; ciphertext pattern analysis"
+      business_impact: "Account compromise, regulatory breach, reputational damage"
+    dread_score:
+      damage: 9
+      reproducibility: 8
+      exploitability: 7
+      affected_users: 9
+      discoverability: 7
+    reviewer_message: "Replace weak crypto with modern primitives: Argon2id/bcrypt for passwords; AES-GCM/ChaCha20-Poly1305 for encryption; avoid ECB."
+    auto_fix_snippet: |
+      # Pseudocode: secure password hashing
+      password_hash = argon2id_hash(password, memory_mb=64, iterations=3, parallelism=2, salt=random_bytes(16))
+      # Pseudocode: secure encryption
+      ciphertext = aead_encrypt(key, nonce=random_bytes(12), plaintext=data, aad=context)
     recommended_controls:
-      - "Implement query timeouts"
-      - "Use pagination for large result sets"
-      - "Limit query complexity"
-      - "Implement database connection pooling"
+      - "Ban weak algorithms by policy/lint"
+      - "Use AEAD modes (AES-GCM)"
+      - "Centralize crypto utilities and key management (KMS/HSM)"
     questions_to_confirm:
-      - "Are query timeouts configured?"
-      - "Is result pagination enforced?"
-      - "Is connection pooling used?"
+      - "Are passwords stored using bcrypt/Argon2 with per-user salts?"
+      - "Is any AES used in ECB/CBC without authentication?"
 
-  # ELEVATION OF PRIVILEGE threats
-  - id: "TM-E-001"
-    name: "Privilege Escalation via RBAC Bypass"
+  - id: "TM-PRIV-001"
+    name: "Improper Logging of PII/Secrets (Tokens, Passwords, Full User Objects)"
+    stride_category: "Information Disclosure"
+    linddun_category: "Detectability"
+    description: "Logs include raw PII (email, SSN, phone), credentials, or tokens, violating privacy and compliance controls."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["logger.info", "console.log", "printStackTrace", "Authorization:", "Bearer ", "Set-Cookie", "password", "SSN", "email=", "phone=", "access_token", "id_token"]
+    compliance:
+      cwe_id: "CWE-532"
+      owasp_api: "API9:2023 Improper Inventory/Logging"
+    pasta_context:
+      threat_actor: "Insider or attacker with log access"
+      attack_surface: "Application logs, APM traces, centralized log stores"
+      attack_vector: "Sensitive fields emitted without redaction"
+      business_impact: "Privacy breach, regulatory fines, incident response cost"
+    dread_score:
+      damage: 8
+      reproducibility: 9
+      exploitability: 7
+      affected_users: 9
+      discoverability: 8
+    reviewer_message: "Adopt structured logging with allowlisted fields only. Redact tokens/PII by default."
+    auto_fix_snippet: |
+      # Pseudocode: allowlist structured logging
+      SAFE_FIELDS = {"request_id", "user_id", "action", "result"}
+      def safe_log(event):
+          sanitized = {k: v for k, v in event.items() if k in SAFE_FIELDS}
+          logger.info(sanitized)
+    recommended_controls:
+      - "Structured logging + field allowlists"
+      - "Redaction middleware for HTTP headers/body"
+      - "Secrets scanning on logs and APM payloads"
+    questions_to_confirm:
+      - "Are Authorization headers or tokens ever logged?"
+      - "Do we log full request/response bodies in production?"
+
+  - id: "TM-PRIV-002"
+    name: "Insecure Client-Side Storage of Secrets/PII (Web/Mobile)"
+    stride_category: "Information Disclosure"
+    linddun_category: "Disclosure of Information"
+    description: "Sensitive data stored in plaintext client storage (localStorage, AsyncStorage, SharedPreferences) can be exfiltrated."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["localStorage.setItem", "sessionStorage.setItem", "AsyncStorage.setItem", "SharedPreferences", "NSUserDefaults", "Keychain", "Keystore", "secureStorage", "MMKV", "sqlite", "realm"]
+    compliance:
+      cwe_id: "CWE-312"
+      owasp_api: "API2:2023 Broken Authentication"
+    pasta_context:
+      threat_actor: "Malicious app, malware, physical device attacker, XSS attacker"
+      attack_surface: "Browser storage, mobile app storage"
+      attack_vector: "Reading plaintext tokens/PII from client storage"
+      business_impact: "Account takeover, PII leakage, session hijacking"
+    dread_score:
+      damage: 8
+      reproducibility: 8
+      exploitability: 7
+      affected_users: 8
+      discoverability: 7
+    reviewer_message: "Do not store long-lived tokens in plaintext client storage. Use secure OS keystores and short-lived tokens."
+    auto_fix_snippet: |
+      # Pseudocode: secure token storage strategy
+      # Prefer: HttpOnly, Secure cookies for web sessions
+      # Mobile: store secrets in Keychain/Keystore with device binding
+      store_token_in_secure_keystore(token, access_control="device_unlock")
+    recommended_controls:
+      - "Use HttpOnly cookies (web) where feasible"
+      - "Mobile secure storage (Keychain/Keystore) + device binding"
+      - "Short-lived access tokens + rotation + refresh token hardening"
+    questions_to_confirm:
+      - "Are tokens stored in localStorage/AsyncStorage?"
+      - "Are refresh tokens protected with OS-level secure storage?"
+
+  - id: "TM-CLOUD-001"
+    name: "Over-Permissive CORS (Access-Control-Allow-Origin: *) with Credentials"
+    stride_category: "Information Disclosure"
+    linddun_category: "Disclosure of Information"
+    description: "Wildcard CORS, especially with credentials, allows cross-origin reads and token leakage."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["Access-Control-Allow-Origin", "*", "cors()", "allowCredentials", "withCredentials", "addAllowedOrigin(\"*\")", "setAllowedOrigins"]
+    compliance:
+      cwe_id: "CWE-942"
+      owasp_api: "API7:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker via malicious website"
+      attack_surface: "Browser-accessible APIs"
+      attack_vector: "Cross-origin requests reading protected responses"
+      business_impact: "Session hijacking, data exfiltration"
+    dread_score:
+      damage: 8
+      reproducibility: 9
+      exploitability: 8
+      affected_users: 8
+      discoverability: 8
+    reviewer_message: "Use explicit allowlists for origins. Never use wildcard origins with credentials."
+    auto_fix_snippet: |
+      # Pseudocode: strict CORS
+      ALLOWED_ORIGINS = {"https://app.example.com", "https://admin.example.com"}
+      def cors_middleware(req, res):
+          origin = req.headers.get("Origin")
+          if origin in ALLOWED_ORIGINS:
+              res.set("Access-Control-Allow-Origin", origin)
+              res.set("Vary", "Origin")
+              res.set("Access-Control-Allow-Credentials", "true")
+          else:
+              # no CORS headers
+              pass
+    recommended_controls:
+      - "Origin allowlist + Vary: Origin"
+      - "Separate public vs private APIs"
+      - "Preflight validation and header minimization"
+    questions_to_confirm:
+      - "Is Access-Control-Allow-Origin set dynamically and safely?"
+      - "Are credentials enabled with wildcard origins?"
+
+  - id: "TM-CLOUD-002"
+    name: "Hardcoded Cloud Credentials / Service Account Keys in Source"
+    stride_category: "Information Disclosure"
+    linddun_category: "Detectability"
+    description: "Cloud access keys and service account JSON keys in code enable direct compromise of cloud resources."
+    default_likelihood: "Medium"
+    default_impact: "Critical"
+    keywords: ["AKIA", "aws_secret_access_key", "BEGIN PRIVATE KEY", "service_account", "client_secret", "azure_storage_account_key", "gcp_sa_key", ".p12", ".pem", "credentials.json"]
+    compliance:
+      cwe_id: "CWE-798"
+      owasp_api: "API2:2023 Broken Authentication"
+    pasta_context:
+      threat_actor: "External attacker or insider"
+      attack_surface: "Git repositories, build logs, artifact stores"
+      attack_vector: "Leaked secrets via commits or CI output"
+      business_impact: "Cloud account takeover, data breach, crypto-mining, service disruption"
+    dread_score:
+      damage: 10
+      reproducibility: 8
+      exploitability: 8
+      affected_users: 9
+      discoverability: 7
+    reviewer_message: "Remove hardcoded cloud credentials immediately. Rotate keys. Use workload identity / IAM roles and secret managers."
+    auto_fix_snippet: |
+      # Pseudocode: use workload identity / secret manager
+      # Do NOT embed keys in code.
+      creds = secret_manager.get("cloud/service-identity")  # rotated, audited
+      client = cloud_client(auth=workload_identity())
+    recommended_controls:
+      - "Secret scanning in CI (gitleaks) + pre-commit hooks"
+      - "Use IAM roles / workload identity federation"
+      - "Central secret manager with rotation and auditing"
+    questions_to_confirm:
+      - "Are any long-lived keys committed or present in CI logs?"
+      - "Is workload identity used instead of static keys?"
+
+  - id: "TM-K8S-001"
+    name: "Privileged Containers / Host Namespace Exposure"
     stride_category: "Elevation of Privilege"
-    description: "Attacker bypasses RBAC to gain elevated permissions"
+    linddun_category: "Linkability"
+    description: "Kubernetes workloads running privileged or with hostPID/hostNetwork can escape containers or access node resources."
     default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["rbac", "RBAC", "@PreAuthorize", "@Secured", "@RolesAllowed"]
+    default_impact: "Critical"
+    keywords: ["privileged: true", "hostPID: true", "hostNetwork: true", "hostPath", "cap_add", "SYS_ADMIN", "allowPrivilegeEscalation: true"]
+    compliance:
+      cwe_id: "CWE-250"
+      owasp_api: "API5:2023 Broken Function Level Authorization"
+    pasta_context:
+      threat_actor: "Malicious workload, compromised container"
+      attack_surface: "Kubernetes manifests, Helm charts, operators"
+      attack_vector: "Privilege escalation via pod security context"
+      business_impact: "Cluster takeover, node escape, data exfiltration"
+    dread_score:
+      damage: 10
+      reproducibility: 7
+      exploitability: 7
+      affected_users: 9
+      discoverability: 6
+    reviewer_message: "Disallow privileged pods and host namespaces. Enforce Pod Security Standards and drop Linux capabilities by default."
+    auto_fix_snippet: |
+      # Kubernetes pod hardening (pseudocode YAML)
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        capabilities:
+          drop: ["ALL"]
     recommended_controls:
-      - "Implement defense-in-depth authorization"
-      - "Validate permissions on every request"
-      - "Use deny-by-default approach"
-      - "Regularly audit permission assignments"
+      - "Pod Security Admission / OPA Gatekeeper policies"
+      - "Default deny hostPath/privileged/hostNetwork"
+      - "Runtime security monitoring"
     questions_to_confirm:
-      - "Is authorization checked on every endpoint?"
-      - "Is access deny-by-default?"
-      - "Are permission audits performed?"
+      - "Do any workloads require hostPath or privileged mode?"
+      - "Is Pod Security enforced cluster-wide?"
 
-  - id: "TM-E-002"
-    name: "JWT Token Manipulation"
+  - id: "TM-APP-001"
+    name: "Insecure Deserialization (RCE via Gadget Chains)"
     stride_category: "Elevation of Privilege"
-    description: "Attacker manipulates JWT token to gain elevated privileges"
+    linddun_category: "Detectability"
+    description: "Deserializing untrusted data (Java/.NET/Python) can allow remote code execution via gadget chains."
+    default_likelihood: "Medium"
+    default_impact: "Critical"
+    keywords: ["ObjectInputStream", "BinaryFormatter", "pickle.loads", "yaml.load(", "readObject(", "Serializable", "Jackson polymorphic", "@JsonTypeInfo", "TypeNameHandling"]
+    compliance:
+      cwe_id: "CWE-502"
+      owasp_api: "API8:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "Endpoints accepting serialized objects, message queues, caches"
+      attack_vector: "Injected serialized payloads triggering gadget chains"
+      business_impact: "RCE, data theft, full service compromise"
+    dread_score:
+      damage: 10
+      reproducibility: 7
+      exploitability: 7
+      affected_users: 8
+      discoverability: 6
+    reviewer_message: "Do not deserialize untrusted data. Use safe formats (JSON) and strict schemas; disable polymorphic typing."
+    auto_fix_snippet: |
+      # Pseudocode: safe parsing
+      # Replace deserialization with JSON + schema validation
+      obj = json_parse(request.body)
+      validate_schema(obj, expected_schema)
+      # If binary required: sign + verify payloads and use allowlisted types only
+    recommended_controls:
+      - "Ban unsafe deserializers (BinaryFormatter, pickle for untrusted input)"
+      - "Schema validation and type allowlists"
+      - "Message authentication for internal payloads"
+    questions_to_confirm:
+      - "Are we deserializing any user-controlled blobs?"
+      - "Is polymorphic typing enabled in JSON libraries?"
+
+  - id: "TM-WEB-001"
+    name: "Cross-Site Scripting (XSS) via Unsafe Rendering"
+    stride_category: "Tampering"
+    linddun_category: "Disclosure of Information"
+    description: "User-controlled HTML/JS is rendered without proper escaping/sanitization, enabling session theft and data exfiltration."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["dangerouslySetInnerHTML", "innerHTML", "v-html", "ng-bind-html", "sanitize=false", "document.write", "eval(", "new Function("]
+    compliance:
+      cwe_id: "CWE-79"
+      owasp_api: "API7:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "Web UI rendering, markdown previews, admin consoles"
+      attack_vector: "Injected scripts in comments, profile fields, rich text"
+      business_impact: "Session hijacking, CSRF chaining, data theft"
+    dread_score:
+      damage: 8
+      reproducibility: 9
+      exploitability: 8
+      affected_users: 8
+      discoverability: 8
+    reviewer_message: "Escape output by default; sanitize any HTML; enable CSP; avoid dangerous HTML injection APIs."
+    auto_fix_snippet: |
+      # Pseudocode: safe rendering
+      # 1) Escape content by default
+      render_text(escape_html(user_input))
+      # 2) If HTML is required: sanitize with allowlisted tags/attrs
+      safe_html = sanitize_html(user_html, allowed_tags=["b","i","a"], allowed_attrs={"a":["href"]})
+    recommended_controls:
+      - "Output encoding and HTML sanitization"
+      - "CSP (script-src) to reduce XSS impact"
+      - "Avoid eval/dynamic code execution in frontend"
+    questions_to_confirm:
+      - "Do we render user input via innerHTML/dangerous HTML APIs?"
+      - "Is CSP deployed and enforced?"
+
+  - id: "TM-AI-001"
+    name: "LLM Prompt Injection / Tool Invocation Hijack"
+    stride_category: "Tampering"
+    linddun_category: "Unawareness"
+    description: "Untrusted user content is embedded in prompts or tool instructions, causing the model/agent to ignore policies or invoke tools unsafely."
+    default_likelihood: "High"
+    default_impact: "High"
+    keywords: ["system prompt", "developer prompt", "tool", "function_call", "agent", "prompt", "ignore previous", "jailbreak", "RAG", "retrieval", "plugins"]
+    compliance:
+      cwe_id: "CWE-74"
+      owasp_api: "API8:2023 Security Misconfiguration"
+    pasta_context:
+      threat_actor: "External attacker"
+      attack_surface: "Chatbots, copilots, agentic workflows, RAG pipelines"
+      attack_vector: "Instruction injection in user input or retrieved documents"
+      business_impact: "Data exfiltration, unauthorized actions, policy bypass"
+    dread_score:
+      damage: 9
+      reproducibility: 9
+      exploitability: 8
+      affected_users: 8
+      discoverability: 8
+    reviewer_message: "Treat user/retrieved text as untrusted. Isolate it from tool directives, apply allowlisted tool policies, and validate tool inputs."
+    auto_fix_snippet: |
+      # Pseudocode: prompt isolation + tool gating
+      prompt = build_prompt(
+          instructions=SECURE_SYSTEM_INSTRUCTIONS,
+          user_content=quote_as_data(user_input),   # never as instruction
+          retrieved_content=quote_as_data(rag_docs) # never as instruction
+      )
+      # Tool invocation policy
+      if model_requests_tool_call():
+          if tool_name not in ALLOWED_TOOLS:
+              deny()
+          validate_tool_args_against_schema(tool_args)
+          require_user_confirmation_for_high_risk_actions()
+    recommended_controls:
+      - "Instruction/data separation (quoting, delimiters, structured prompts)"
+      - "Allowlisted tools and argument schema validation"
+      - "Human-in-the-loop for high-risk operations"
+    questions_to_confirm:
+      - "Can retrieved documents influence tool instructions?"
+      - "Are tool calls allowlisted and validated?"
+
+  - id: "TM-AI-002"
+    name: "Sensitive Data Leakage to External LLM Providers"
+    stride_category: "Information Disclosure"
+    linddun_category: "Disclosure of Information"
+    description: "PII/PHI/secrets are sent to external AI services, creating compliance and confidentiality risk."
+    default_likelihood: "Medium"
+    default_impact: "Critical"
+    keywords: ["OpenAI", "Anthropic", "AzureOpenAI", "bedrock", "vertexai", "completion", "chat.completions", "prompt=", "messages=", "tools=", "attachments"]
+    compliance:
+      cwe_id: "CWE-201"
+      owasp_api: "API9:2023 Improper Inventory/Logging"
+    pasta_context:
+      threat_actor: "Third-party provider exposure, insider, supply chain attacker"
+      attack_surface: "AI gateway clients, logging, prompt traces"
+      attack_vector: "Sending raw customer data in prompts"
+      business_impact: "Regulatory breach, contractual violations, data leakage"
+    dread_score:
+      damage: 10
+      reproducibility: 7
+      exploitability: 6
+      affected_users: 9
+      discoverability: 6
+    reviewer_message: "Redact/minimize sensitive fields before AI calls. Enforce data classification, DLP controls, and approved providers/contracts."
+    auto_fix_snippet: |
+      # Pseudocode: AI request minimization + redaction
+      def call_llm(user_context):
+          safe = redact(user_context, patterns=["SSN", "email", "phone", "token", "password"])
+          safe = minimize_fields(safe, allowlist=["issue_summary", "error_code", "non_sensitive_metadata"])
+          return llm.chat(messages=[{"role":"user","content": safe}])
+    recommended_controls:
+      - "DLP/redaction before AI calls"
+      - "Policy-based routing (on-prem vs external) by data classification"
+      - "Disable provider-side retention where possible"
+    questions_to_confirm:
+      - "Are prompts/traces logged with customer data?"
+      - "Is there a classification gate before external AI calls?"
+
+  - id: "TM-BIZ-001"
+    name: "Client-Side Trust of Financial Fields (Price/Quantity/Risk Score Manipulation)"
+    stride_category: "Tampering"
+    linddun_category: "Unawareness"
+    description: "Server trusts client-supplied price/quantity/risk fields, enabling fraud by parameter tampering."
+    default_likelihood: "High"
+    default_impact: "Critical"
+    keywords: ["price", "amount", "subtotal", "discount", "risk_score", "maxRiskScore", "kyc_passed", "aml_status", "clientCalculated", "hidden input"]
+    compliance:
+      cwe_id: "CWE-602"
+      owasp_api: "API5:2023 Broken Function Level Authorization"
+    pasta_context:
+      threat_actor: "Fraudster"
+      attack_surface: "Checkout, payout, underwriting, risk scoring APIs"
+      attack_vector: "Modify client parameters, replay requests"
+      business_impact: "Financial loss, AML/KYC violations, chargebacks"
+    dread_score:
+      damage: 10
+      reproducibility: 7
+      exploitability: 7
+      affected_users: 8
+      discoverability: 6
+    reviewer_message: "Recompute all financial/risk-critical fields server-side from authoritative sources. Treat client values as hints only."
+    auto_fix_snippet: |
+      # Pseudocode: server-side calculation
+      def create_order(user, request):
+          items = fetch_items_from_db(request.item_ids)
+          price = calculate_price(items, user.segment, promotions_db)
+          tax = calculate_tax(user.address, items)
+          total = price + tax
+          persist_order(user_id=user.id, items=items, total=total)
+    recommended_controls:
+      - "Server-side recalculation of totals and risk"
+      - "Signed quotes and expiry for price offers"
+      - "Fraud monitoring for abnormal deltas"
+    questions_to_confirm:
+      - "Do we ever persist client-provided totals or risk scores?"
+      - "Are promotions/coupons validated server-side?"
+
+  - id: "TM-BIZ-002"
+    name: "KYC/AML Gate Bypass via Parameter Tampering or Workflow Skips"
+    stride_category: "Tampering"
+    linddun_category: "Unawareness"
+    description: "KYC/AML enforcement can be bypassed if state flags are client-controlled or not enforced at payout/withdrawal time."
+    default_likelihood: "Medium"
+    default_impact: "Critical"
+    keywords: ["aml_status", "kyc_passed", "bypass", "override", "hold_transaction", "previous_review", "approved=true", "isVerified", "complianceStatus"]
+    compliance:
+      cwe_id: "CWE-285"
+      owasp_api: "API5:2023 Broken Function Level Authorization"
+    pasta_context:
+      threat_actor: "Fraudster or compromised insider account"
+      attack_surface: "Payout, withdrawal, onboarding, compliance APIs"
+      attack_vector: "Tampering with approval flags or calling internal endpoints"
+      business_impact: "Illicit payouts, regulatory exposure, sanctions risk"
+    dread_score:
+      damage: 10
+      reproducibility: 6
+      exploitability: 6
+      affected_users: 9
+      discoverability: 6
+    reviewer_message: "Enforce KYC/AML checks server-side at the moment of money movement. Make compliance decisions immutable and audited."
+    auto_fix_snippet: |
+      # Pseudocode: enforce gates at transaction time
+      def issue_payout(user, amount):
+          compliance = compliance_service.get_state(user.id)
+          if compliance.aml_status != "clear" or compliance.kyc_passed != True:
+              raise Forbidden("KYC/AML not satisfied")
+          require_dual_control_if_override()
+          return payout_processor.send(user.id, amount)
+    recommended_controls:
+      - "Server-side gates at payout/withdrawal"
+      - "Immutable audit trail + dual control for overrides"
+      - "Least privilege for internal compliance APIs"
+    questions_to_confirm:
+      - "Can payouts occur without AML/KYC = passed/clear?"
+      - "Are overrides dual-controlled and logged?"
+
+  - id: "TM-BIZ-003"
+    name: "Race Condition / TOCTOU in Financial Operations (Double Spend, Coupon Abuse)"
+    stride_category: "Tampering"
+    linddun_category: "Non-repudiation"
+    description: "Concurrent requests exploit non-atomic checks, leading to double spends, duplicate refunds, or coupon reuse."
     default_likelihood: "Medium"
     default_impact: "High"
-    keywords: ["jwt", "JsonWebToken", "jsonwebtoken", "oauth"]
+    keywords: ["transaction", "balance", "deduct", "reserve", "coupon", "redeem", "idempotency", "SELECT ... FOR UPDATE", "optimistic lock", "version column"]
+    compliance:
+      cwe_id: "CWE-362"
+      owasp_api: "API4:2023 Unrestricted Resource Consumption"
+    pasta_context:
+      threat_actor: "Fraudster or automation scripts"
+      attack_surface: "Payment, wallet, coupon, inventory reservation endpoints"
+      attack_vector: "Parallel requests, replay, race exploitation"
+      business_impact: "Financial loss, ledger inconsistencies, reconciliation failures"
+    dread_score:
+      damage: 8
+      reproducibility: 7
+      exploitability: 7
+      affected_users: 7
+      discoverability: 6
+    reviewer_message: "Make state transitions atomic using DB transactions/locks or idempotency keys. Ensure operations are replay-safe."
+    auto_fix_snippet: |
+      # Pseudocode: idempotency + atomic update
+      def redeem_coupon(user, coupon_id, idem_key):
+          if idem_store.seen(idem_key):
+              return idem_store.result(idem_key)
+          with db.transaction():
+              coupon = db.fetch_for_update("coupon", coupon_id)
+              if coupon.used_by is not None:
+                  raise Conflict("already used")
+              db.update("coupon", coupon_id, {"used_by": user.id})
+          idem_store.save(idem_key, "success")
+          return "success"
     recommended_controls:
-      - "Validate JWT signature on every request"
-      - "Use short token expiration times"
-      - "Implement token refresh mechanism"
-      - "Include claims validation"
+      - "Idempotency keys for money-moving endpoints"
+      - "Row locks / optimistic concurrency control"
+      - "Replay detection and deduplication"
     questions_to_confirm:
-      - "Is JWT signature validated?"
-      - "Are token expirations configured?"
-      - "Is refresh token flow implemented?"
-
-  - id: "TM-E-003"
-    name: "SQL Injection for Privilege Escalation"
-    stride_category: "Elevation of Privilege"
-    description: "Attacker uses SQL injection to bypass authentication or gain admin access"
-    default_likelihood: "Medium"
-    default_impact: "High"
-    keywords: ["SELECT", "INSERT", "UPDATE", "DELETE", "executeQuery", "Statement"]
-    recommended_controls:
-      - "Use prepared statements for all SQL queries"
-      - "Implement input validation and sanitization"
-      - "Use ORM frameworks that prevent SQLi"
-      - "Apply least privilege database accounts"
-    questions_to_confirm:
-      - "Are prepared statements used?"
-      - "Is input validation implemented?"
-      - "Are ORM frameworks used?"
-
-# Asset categories for CIA triad assessment
-assets:
-  - name: "User Database (USERS table)"
-    default_confidentiality: "High"
-    default_integrity: "High"
-    default_availability: "Medium"
-    description: "Stores user PII and credentials"
-
-  - name: "Transaction Processing System"
-    default_confidentiality: "Medium"
-    default_integrity: "High"
-    default_availability: "High"
-    description: "Processes financial transactions"
-
-  - name: "Risk Assessment Engine"
-    default_confidentiality: "Medium"
-    default_integrity: "High"
-    default_availability: "High"
-    description: "Calculates risk scores and holds"
-
-  - name: "API Gateway"
-    default_confidentiality: "Medium"
-    default_integrity: "Medium"
-    default_availability: "High"
-    description: "Routes and authenticates API requests"
-
-  - name: "Session Management"
-    default_confidentiality: "Medium"
-    default_integrity: "High"
-    default_availability: "Medium"
-    description: "Manages user sessions and tokens"
-
-  - name: "Case Management UI"
-    default_confidentiality: "High"
-    default_integrity: "Medium"
-    default_availability: "Medium"
-    description: "Displays and manages case data"
-
-  - name: "Audit Logs"
-    default_confidentiality: "Medium"
-    default_integrity: "High"
-    default_availability: "Medium"
-    description: "Stores audit trail of actions"
-
-  - name: "Database (Oracle/JDBC)"
-    default_confidentiality: "High"
-    default_integrity: "High"
-    default_availability: "High"
-    description: "Primary data storage"
-
-# Data sensitivity levels
-sensitivity_levels:
-  - level: "Critical"
-    description: "Data whose exposure would cause severe harm (e.g., credentials, encryption keys)"
-    examples: ["Passwords", "API keys", "Private keys", "Secret tokens"]
-
-  - level: "High"
-    description: "Sensitive personal or business data (e.g., PII, financial data)"
-    examples: ["User PII", "Transaction history", "Risk scores", "Case data"]
-
-  - level: "Medium"
-    description: "Internal business data not meant for public disclosure"
-    examples: ["User agent strings", "OS versions", "Browser types", "Business logic"]
-
-  - level: "Low"
-    description: "Non-sensitive operational data"
-    examples: ["API documentation", "Metadata", "Public endpoints"]
-
-# Priority matrix (default values)
-priority_matrix:
-  - likelihood: "High"
-    impact: "High"
-    priority: "Critical"
-  - likelihood: "High"
-    impact: "Medium"
-    priority: "High"
-  - likelihood: "Medium"
-    impact: "High"
-    priority: "High"
-  - likelihood: "Medium"
-    impact: "Medium"
-    priority: "Medium"
-  - likelihood: "Low"
-    impact: "High"
-    priority: "Medium"
-  - likelihood: "High"
-    impact: "Low"
-    priority: "Medium"
-  - likelihood: "Medium"
-    impact: "Low"
-    priority: "Low"
-  - likelihood: "Low"
-    impact: "Medium"
-    priority: "Low"
-  - likelihood: "Low"
-    impact: "Low"
-    priority: "Low"
+      - "Are money-moving endpoints idempotent?"
+      - "Are state transitions protected by transactions/locking?"

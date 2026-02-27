@@ -1,0 +1,137 @@
+# ==============================================================================
+# Enterprise Threat Modeling Scanner - Core Ruleset
+# Version: 1.0-Production
+# ==============================================================================
+
+rules:
+  # ----------------------------------------------------------------------------
+  # CATEGORY: INJECTION (SQLi, Command, NoSQL, LDAP)
+  # ----------------------------------------------------------------------------
+  - id: "vuln-sqli-concatenation"
+    category: "injection"
+    sub_category: "sql_injection"
+    severity: "CRITICAL"
+    cwe: "CWE-89"
+    target_extensions: [".java", ".js", ".ts", ".py", ".cs", ".go", ".php"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(SELECT|UPDATE|DELETE|INSERT|ALTER|DROP)\\s+.*?(FROM|INTO|TABLE)"
+      - regex: "(\\+\\s*[a-zA-Z_0-9]+|f[\"'].*?\\{.*?\\}.*?[\"']|fmt\\.Sprintf)"
+    not_patterns:
+      - regex: "(?i)(prepareStatement|bindParam|queryRaw|@Query|createNamedQuery)"
+
+  - id: "vuln-os-command-injection"
+    category: "injection"
+    sub_category: "cmd_injection"
+    severity: "CRITICAL"
+    cwe: "CWE-78"
+    target_extensions: [".py", ".js", ".ts", ".java", ".go"]
+    condition: "OR"
+    patterns:
+      - regex: "(?i)(os\\.system|subprocess\\.Popen|subprocess\\.call|child_process\\.exec|Runtime\\.getRuntime\\(\\)\\.exec|exec\\.|execFile\\(|syscall\\.Exec)"
+    not_patterns:
+      - regex: "(?i)(os\\.system\\(['\"][a-zA-Z0-9_\\-\\.]+['\"]\\))"
+
+  # ----------------------------------------------------------------------------
+  # CATEGORY: AUTHENTICATION & SECRETS (Spoofing / Information Disclosure)
+  # ----------------------------------------------------------------------------
+  - id: "vuln-hardcoded-credentials"
+    category: "authn"
+    sub_category: "hardcoded_secret"
+    severity: "CRITICAL"
+    cwe: "CWE-798"
+    target_extensions: [".java", ".js", ".ts", ".py", ".go", ".yml", ".yaml", ".properties", ".xml"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(password|passwd|pwd|secret|token|api_key|apikey|access_key|auth_token)"
+      - regex: "(=|:)\\s*['\"][a-zA-Z0-9\\+\\/\\=\\-\\_]{12,}['\"]"
+    not_patterns:
+      - regex: "(?i)(getenv|os\\.environ|System\\.getProperty|config|null|undefined|test|example|default)"
+
+  - id: "vuln-jwt-none-algorithm"
+    category: "authn"
+    sub_category: "jwt_weak_crypto"
+    severity: "HIGH"
+    cwe: "CWE-347"
+    target_extensions: [".js", ".ts", ".java", ".py", ".go"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(jwt\\.|jsonwebtoken|jose)"
+      - regex: "(?i)([\"']alg[\"']\\s*:\\s*[\"']none[\"']|Algorithm\\.none\\(\\))"
+
+  # ----------------------------------------------------------------------------
+  # CATEGORY: WEAK CRYPTOGRAPHY & HASHING
+  # ----------------------------------------------------------------------------
+  - id: "vuln-weak-hashing"
+    category: "crypto"
+    sub_category: "weak_hash"
+    severity: "HIGH"
+    cwe: "CWE-328"
+    target_extensions: [".java", ".js", ".ts", ".py", ".go", ".cs"]
+    condition: "OR"
+    patterns:
+      - regex: "(?i)(MessageDigest\\.getInstance\\(['\"]MD5['\"]\\)|crypto\\.createHash\\(['\"]md5['\"]\\)|hashlib\\.md5|crypto\\.createHash\\(['\"]sha1['\"]\\))"
+
+  - id: "vuln-insecure-random"
+    category: "crypto"
+    sub_category: "prng"
+    severity: "MEDIUM"
+    cwe: "CWE-330"
+    target_extensions: [".java", ".js", ".ts", ".py", ".go"]
+    condition: "OR"
+    patterns:
+      - regex: "(?i)(Math\\.random\\(\\)|new\\s+Random\\(\\)|random\\.randint|rand\\.Intn)"
+    not_patterns:
+      - regex: "(?i)(SecureRandom|crypto\\.randomBytes|secrets\\.rand|crypto/rand)"
+
+  # ----------------------------------------------------------------------------
+  # CATEGORY: DESERIALIZATION & XXE (Tampering / Remote Code Execution)
+  # ----------------------------------------------------------------------------
+  - id: "vuln-insecure-deserialization"
+    category: "tampering"
+    sub_category: "deserialization"
+    severity: "CRITICAL"
+    cwe: "CWE-502"
+    target_extensions: [".java", ".py", ".js", ".ts", ".cs"]
+    condition: "OR"
+    patterns:
+      - regex: "(?i)(ObjectInputStream|readObject\\(\\)|pickle\\.loads|yaml\\.load\\(|serialize\\.unserialize)"
+    not_patterns:
+      - regex: "(?i)(yaml\\.safe_load)"
+
+  - id: "vuln-xxe-xml-external-entity"
+    category: "tampering"
+    sub_category: "xxe"
+    severity: "HIGH"
+    cwe: "CWE-611"
+    target_extensions: [".java", ".cs", ".js", ".ts", ".py"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(DocumentBuilderFactory|SAXParserFactory|XMLReader|libxml2)"
+    not_patterns:
+      - regex: "(?i)(setFeature\\([\"']http://apache\\.org/xml/features/disallow-doctype-decl[\"'],\\s*true\\))"
+
+  # ----------------------------------------------------------------------------
+  # CATEGORY: BUSINESS LOGIC & FILE HANDLING
+  # ----------------------------------------------------------------------------
+  - id: "vuln-path-traversal"
+    category: "business_logic"
+    sub_category: "path_traversal"
+    severity: "HIGH"
+    cwe: "CWE-22"
+    target_extensions: [".java", ".py", ".js", ".ts", ".go"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(readFile|readFileSync|open\\(|FileInputStream|ioutil\\.ReadFile)"
+      - regex: "(req\\.query|req\\.body|request\\.getParameter|os\\.Args)"
+
+  - id: "vuln-sensitive-data-logging"
+    category: "repudiation"
+    sub_category: "pii_leak"
+    severity: "HIGH"
+    cwe: "CWE-532"
+    target_extensions: [".java", ".js", ".ts", ".py", ".go"]
+    condition: "AND"
+    patterns:
+      - regex: "(?i)(log\\.|logger\\.|console\\.|logging\\.)"
+      - regex: "(?i)(password|credit\\s*card|cc_number|ssn|social\\s*security|auth_token)"

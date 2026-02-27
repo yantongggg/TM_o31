@@ -17,7 +17,9 @@ class EvidenceScanner:
     def __init__(self, config: Config):
         self.config = config
         self.kb_keywords = self._load_keywords()
+        self.kb_rules = self._load_rules()
         self.keywords = self._build_keyword_map()
+        self.rules = self._prepare_rules()
 
     def _load_keywords(self) -> Dict:
         """Load keyword knowledge base from YAML."""
@@ -46,6 +48,57 @@ class EvidenceScanner:
                     }
         return keyword_map
 
+    def _load_rules(self) -> Dict:
+        """Load rules knowledge base from YAML."""
+        try:
+            with open(self.config.kb_rules_path, "r") as f:
+                return yaml.safe_load(f) or {"rules": []}
+        except Exception as e:
+            print(f"Warning: Could not load rules KB: {e}")
+            return {"rules": []}
+
+    def _prepare_rules(self) -> List[Dict[str, Any]]:
+        """Normalize and compile rule patterns for faster scanning."""
+        prepared = []
+        for rule in self.kb_rules.get("rules", []) if isinstance(self.kb_rules, dict) else []:
+            if not isinstance(rule, dict):
+                continue
+            patterns = rule.get("patterns", []) or []
+            not_patterns = rule.get("not_patterns", []) or []
+            compiled_patterns = self._compile_patterns(patterns)
+            compiled_not_patterns = self._compile_patterns(not_patterns)
+
+            target_exts = [ext.lower() for ext in (rule.get("target_extensions", []) or [])]
+            condition = (rule.get("condition") or "OR").upper()
+
+            prepared.append({
+                **rule,
+                "_compiled_patterns": compiled_patterns,
+                "_compiled_not_patterns": compiled_not_patterns,
+                "_target_extensions": target_exts,
+                "_condition": condition,
+            })
+
+        return prepared
+
+    def _compile_patterns(self, patterns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Compile regex patterns with safe defaults."""
+        compiled = []
+        for item in patterns:
+            if not isinstance(item, dict):
+                continue
+            regex = item.get("regex")
+            if not regex:
+                continue
+            try:
+                compiled.append({
+                    "regex": regex,
+                    "pattern": re.compile(regex),
+                })
+            except re.error:
+                continue
+        return compiled
+
     def scan_repo(self, repo_name: str, repo_path: Path) -> Dict[str, Any]:
         """
         Scan a repository for evidence.
@@ -59,6 +112,7 @@ class EvidenceScanner:
             "db_migration_files": [],
             "config_files": [],
             "keyword_hits": [],
+            "rule_hits": [],
             "auth_hints": [],
             "db_hints": [],
             "risky_config_hints": [],
@@ -94,6 +148,7 @@ class EvidenceScanner:
         # Calculate counts
         for key in ["openapi_files", "db_migration_files", "config_files"]:
             evidence["file_counts"][key] = len(evidence[key])
+        evidence["file_counts"]["rule_hits"] = len(evidence.get("rule_hits", []))
 
         return evidence
 
@@ -131,6 +186,7 @@ class EvidenceScanner:
             with open(file_path, "r", errors="ignore") as f:
                 content = f.read()
                 self._find_keywords(content, str(rel_path), evidence)
+                self._find_rules(content, str(rel_path), rel_path.suffix.lower(), evidence)
         except Exception:
             pass
 
@@ -172,6 +228,55 @@ class EvidenceScanner:
                             "value": keyword,
                             "file_path": file_path,
                         })
+
+    def _find_rules(self, content: str, file_path: str, file_ext: str, evidence: Dict):
+        """Evaluate advanced rules against file content."""
+        for rule in self.rules:
+            target_exts = rule.get("_target_extensions", [])
+            if target_exts and file_ext not in target_exts:
+                continue
+
+            if not self._rule_matches(rule, content):
+                continue
+
+            existing = [
+                h for h in evidence["rule_hits"]
+                if h["file_path"] == file_path and h["rule_id"] == rule.get("id")
+            ]
+            if existing:
+                continue
+
+            evidence["rule_hits"].append({
+                "rule_id": rule.get("id", "unknown"),
+                "file_path": file_path,
+                "category": rule.get("category", "unknown"),
+                "sub_category": rule.get("sub_category", "unknown"),
+                "severity": rule.get("severity", "MEDIUM"),
+                "cwe": rule.get("cwe", "unknown"),
+            })
+
+    def _rule_matches(self, rule: Dict[str, Any], content: str) -> bool:
+        """Check if a rule matches content using AND/OR with NOT patterns."""
+        compiled_patterns = rule.get("_compiled_patterns", [])
+        if not compiled_patterns:
+            return False
+
+        pattern_hits = [bool(item["pattern"].search(content)) for item in compiled_patterns]
+        condition = rule.get("_condition", "OR")
+        if condition == "AND":
+            matched = all(pattern_hits)
+        else:
+            matched = any(pattern_hits)
+
+        if not matched:
+            return False
+
+        compiled_not_patterns = rule.get("_compiled_not_patterns", [])
+        for item in compiled_not_patterns:
+            if item["pattern"].search(content):
+                return False
+
+        return True
 
     def _check_config_hints(self, file_path: Path, rel_path: Path, evidence: Dict):
         """Check config files for risky patterns."""
@@ -239,6 +344,7 @@ class EvidenceScanner:
             f"| DB Migration Files | {evidence['file_counts'].get('db_migration_files', 0)} |",
             f"| Config Files | {evidence['file_counts'].get('config_files', 0)} |",
             f"| Keyword Hits | {len(evidence.get('keyword_hits', []))} |",
+            f"| Rule Hits | {len(evidence.get('rule_hits', []))} |",
             f"| Auth Hints | {len(evidence.get('auth_hints', []))} |",
             f"| Database Hints | {len(evidence.get('db_hints', []))} |",
             f"| Risky Config Hints | {len(evidence.get('risky_config_hints', []))} |",
@@ -298,6 +404,25 @@ class EvidenceScanner:
                 lines.append(f"| {hit['keyword']} | {hit['category']} | `{file_display}` |")
             if len(high_priority) > 50:
                 lines.append(f"| ... | ... | ... and {len(high_priority) - 50} more |")
+            lines.append("")
+
+        # Rule Hits
+        if evidence.get("rule_hits"):
+            lines.extend([
+                "## Rule Hits",
+                "",
+                "| Rule ID | Severity | Category | File |",
+                "|---------|----------|----------|------|",
+            ])
+            for hit in evidence["rule_hits"][:50]:
+                file_display = hit["file_path"][:60]
+                if len(hit["file_path"]) > 60:
+                    file_display += "..."
+                lines.append(
+                    f"| {hit['rule_id']} | {hit['severity']} | {hit['category']} | `{file_display}` |"
+                )
+            if len(evidence["rule_hits"]) > 50:
+                lines.append(f"| ... | ... | ... | ... and {len(evidence['rule_hits']) - 50} more |")
             lines.append("")
 
         # Authentication Hints

@@ -14,9 +14,47 @@ from .config import Config
 class RepoInventory:
     """Manages GitHub repository inventory."""
 
+    # Default public GitHub API URL
+    DEFAULT_GITHUB_API_URL = "https://api.github.com"
+
     def __init__(self, config: Config):
         self.config = config
         self.repos: List[Dict] = []
+
+    def _build_api_url(self, endpoint: str) -> str:
+        """
+        Build the full API URL for the given endpoint.
+        
+        For public GitHub (default): https://api.github.com/{endpoint}
+        For GitHub Enterprise: https://<host>/api/v3/{endpoint}
+        
+        Args:
+            endpoint: The API endpoint path (e.g., "orgs/{org}/repos")
+        
+        Returns:
+            Full API URL string
+        """
+        base_url = self.config.github_api_url
+        
+        if not base_url:
+            # Default to public GitHub API
+            return f"{self.DEFAULT_GITHUB_API_URL}/{endpoint}"
+        
+        # Normalize the URL
+        if not base_url.startswith("http"):
+            base_url = f"https://{base_url}"
+        base_url = base_url.rstrip("/")
+        
+        # Check if this is the public GitHub API (already includes api.github.com)
+        if "api.github.com" in base_url:
+            return f"{base_url}/{endpoint}"
+        
+        # For GitHub Enterprise, use /api/v3/ prefix
+        # Handle case where user might have already included /api/v3
+        if "/api/v3" in base_url:
+            return f"{base_url}/{endpoint}"
+        
+        return f"{base_url}/api/v3/{endpoint}"
 
     def fetch_repos(self) -> List[Dict]:
         """
@@ -81,11 +119,15 @@ class RepoInventory:
             if use_token and self.config.github_token:
                 headers.append(f"Authorization: token {self.config.github_token}")
 
+            # Build the API URL based on configuration
+            api_url = self._build_api_url(f"orgs/{self.config.org}/repos?per_page=100&type=all")
+            print(f"  DEBUG: API URL = {api_url}")
+
             # Build curl command with headers
-            curl_cmd = ["curl", "-s"]
+            curl_cmd = ["curl", "-s", "-k"]  # -k to ignore SSL certificate issues with self-signed certs
             for header in headers:
                 curl_cmd.extend(["-H", header])
-            curl_cmd.append(f"https://api.github.com/orgs/{self.config.org}/repos?per_page=100&type=all")
+            curl_cmd.append(api_url)
 
             result = subprocess.run(
                 curl_cmd,
@@ -95,15 +137,25 @@ class RepoInventory:
                 timeout=30,
             )
 
-            # Check for API errors
-            if result.status_code >= 400:
-                error_data = json.loads(result.stdout) if result.stdout else {}
-                print(f"GitHub API error: {error_data.get('message', result.stderr)}")
+            # Debug: show response preview
+            response_preview = result.stdout[:500] if result.stdout else "(empty)"
+            print(f"  DEBUG: Response preview = {response_preview[:200]}...")
+
+            # Check for empty response
+            if not result.stdout.strip():
+                print(f"GitHub API error: Empty response received")
                 return []
 
             repos = json.loads(result.stdout)
+            
+            # Check if the response is an error object
+            if isinstance(repos, dict):
+                error_msg = repos.get("message", "Unknown error")
+                print(f"GitHub API error: {error_msg}")
+                return []
+            
             if not isinstance(repos, list):
-                print(f"GitHub API returned unexpected data format")
+                print(f"GitHub API returned unexpected data format: {type(repos)}")
                 return []
 
             # Transform to match gh CLI format
@@ -177,8 +229,9 @@ class RepoInventory:
         if not date_str:
             return None
         try:
-            # Handle ISO 8601 format
-            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            # Handle ISO 8601 format - strip timezone info to make naive datetime
+            date_str = date_str.replace("Z", "").replace("+00:00", "").split("+")[0].split("-")[0] if "+" in date_str or date_str.endswith("Z") else date_str
+            return datetime.fromisoformat(date_str)
         except (ValueError, AttributeError):
             return None
 

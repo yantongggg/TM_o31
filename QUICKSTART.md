@@ -18,6 +18,8 @@ cd tm-scan
 pip install -r requirements.txt
 chmod +x tm-scan
 ```
+Optional PDF output: add `--pdf` when running scans. WeasyPrint may require
+system libraries on some platforms.
 
 ### Step 3: Configure (choose one method)
 
@@ -97,3 +99,5 @@ cat ~/tm-output/run-metadata/selected-repos.txt
 | `--github-token TOKEN` | Auth token |
 | `--no-gitleaks` | Skip secret scan |
 | `--no-sbom` | Skip SBOM |
+| `--pdf` | Generate PDF report |
+| `--pdf` | Generate PDF report |

@@ -23,7 +23,9 @@ class RepoCloner:
             (success, message) tuple
         """
         repo_path = self.config.workspace_dir / repo_name
-        git_url = f"git@github.com:{self.config.org}/{repo_name}.git"
+
+        # Construct git URL - prefer HTTPS with token for authentication
+        git_url = self._build_clone_url(repo_name)
 
         try:
             if repo_path.exists():
@@ -35,18 +37,39 @@ class RepoCloner:
         except Exception as e:
             return False, f"Error: {str(e)}"
 
+    def _build_clone_url(self, repo_name: str) -> str:
+        """
+        Build the git clone URL for a repository.
+        
+        Uses HTTPS with token authentication when available, which is more
+        reliable than SSH in corporate environments.
+        """
+        # Determine the host
+        if self.config.github_api_url:
+            # Extract hostname from API URL
+            host = self.config.github_api_url.replace("https://", "").replace("http://", "").split("/")[0].rstrip("/")
+        else:
+            host = "github.com"
+        
+        # Use HTTPS with token for authentication
+        # Format: https://x-access-token:<token>@<host>/<org>/<repo>.git
+        # This is the standard format for GitHub PATs
+        if self.config.github_token:
+            return f"https://x-access-token:{self.config.github_token}@{host}/{self.config.org}/{repo_name}.git"
+        else:
+            # Fallback to plain HTTPS (may prompt for credentials or fail for private repos)
+            return f"https://{host}/{self.config.org}/{repo_name}.git"
+
     def _clone_new_repo(self, git_url: str, repo_path: Path, repo_name: str) -> tuple[bool, str]:
         """Clone a new repository with shallow depth."""
-        depth_arg = f"--depth={self.config.depth}" if self.config.depth > 0 else ""
+        # Build git clone command
+        cmd = ["git", "clone"]
+        if self.config.depth > 0:
+            cmd.extend([f"--depth={self.config.depth}", "--single-branch"])
+        cmd.extend([git_url, str(repo_path)])
 
         result = subprocess.run(
-            [
-                "git", "clone",
-                depth_arg,
-                "--single-branch",
-                git_url,
-                str(repo_path)
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,  # 5 minute timeout

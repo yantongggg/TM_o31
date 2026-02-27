@@ -4,6 +4,7 @@ Configuration handling for tm-scan.
 
 import os
 import json
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
@@ -48,7 +49,10 @@ class Config:
         dry_run: bool = False,
         no_gitleaks: bool = False,
         no_sbom: bool = False,
+        pdf_reports: bool = False,
         github_token: Optional[str] = None,
+        github_enterprise_url: Optional[str] = None,
+        github_api_url: Optional[str] = None,
     ):
         # Load .env file if present
         env_vars = load_env_file()
@@ -62,9 +66,12 @@ class Config:
         self.dry_run = dry_run
         self.no_gitleaks = no_gitleaks
         self.no_sbom = no_sbom
+        self.pdf_reports = pdf_reports
 
         # GitHub token priority: parameter > .env file > environment variable
         self.github_token = (
+        local_dir: Optional[str] = None,
+        fail_on_critical: bool = False,
             github_token or
             env_vars.get("GITHUB_TOKEN") or
             env_vars.get("TM_GITHUB_TOKEN") or
@@ -72,14 +79,22 @@ class Config:
             os.environ.get("TM_GITHUB_TOKEN")
         )
 
-        # Set default paths
-        home = Path.home()
+        # GitHub API URL priority: parameter > .env file > environment variable > default
+        # GITHUB_API_URL is the new preferred variable; GITHUB_ENTERPRISE_URL kept for backward compatibility
+        self.github_api_url = (
+            github_api_url or
+            env_vars.get("GITHUB_API_URL") or
+            os.environ.get("GITHUB_API_URL") or
+            github_enterprise_url or
+        # GitHub token resolution: CLI arg > CI env > gh CLI
+        self.github_token = self._resolve_github_token(github_token)
         self.workspace_dir = Path(workspace_dir or home / "tm-workspace")
         self.output_dir = Path(output_dir or home / "tm-output")
 
         # Knowledge base paths
         self.script_dir = Path(__file__).parent.parent
         self.kb_keywords_path = self.script_dir / "knowledge-base" / "kb-keywords.yaml"
+        self.kb_rules_path = self.script_dir / "knowledge-base" / "kb-rules.yaml"
         self.kb_threats_path = self.script_dir / "knowledge-base" / "kb-threats.yaml"
 
         # Run timestamp
@@ -106,6 +121,8 @@ class Config:
         """Get the log file path for this run."""
         return self.logs_dir / f"run-{self.run_id}.log"
 
+        self.local_dir = Path(local_dir).expanduser().resolve() if local_dir else None
+        self.fail_on_critical = fail_on_critical
     def to_dict(self) -> dict:
         """Convert config to dictionary for JSON serialization."""
         return {
@@ -118,13 +135,19 @@ class Config:
             "dry_run": self.dry_run,
             "no_gitleaks": self.no_gitleaks,
             "no_sbom": self.no_sbom,
+            "pdf_reports": self.pdf_reports,
             "github_token": "***REDACTED***" if self.github_token else None,
+            "github_api_url": self.github_api_url,
+            "github_enterprise_url": self.github_enterprise_url,
             "workspace_dir": str(self.workspace_dir),
             "output_dir": str(self.output_dir),
             "run_timestamp": self.run_timestamp,
             "run_id": self.run_id,
             "kb_keywords_path": str(self.kb_keywords_path),
+            "kb_rules_path": str(self.kb_rules_path),
             "kb_threats_path": str(self.kb_threats_path),
+            "local_dir": str(self.local_dir) if self.local_dir else None,
+            "fail_on_critical": self.fail_on_critical,
         }
 
     def save_config(self):
@@ -150,5 +173,32 @@ class Config:
             dry_run=data.get("dry_run", False),
             no_gitleaks=data.get("no_gitleaks", False),
             no_sbom=data.get("no_sbom", False),
+            pdf_reports=data.get("pdf_reports", False),
             github_token=data.get("github_token"),
+            github_enterprise_url=data.get("github_enterprise_url"),
+            github_api_url=data.get("github_api_url"),
+            local_dir=data.get("local_dir"),
+            fail_on_critical=data.get("fail_on_critical", False),
         )
+
+    def _resolve_github_token(self, token_arg: Optional[str]) -> Optional[str]:
+        """Resolve GitHub token using hybrid auth (CI env or gh CLI)."""
+        if token_arg:
+            return token_arg
+
+        if str(os.environ.get("GITHUB_ACTIONS", "")).lower() == "true":
+            return os.environ.get("GITHUB_TOKEN")
+
+        try:
+            completed = subprocess.run(
+                ["gh", "auth", "token"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            token = (completed.stdout or "").strip()
+            return token or None
+        except Exception:
+            print("GitHub CLI token unavailable. Run 'gh auth login' or set GITHUB_TOKEN.")
+            return None
