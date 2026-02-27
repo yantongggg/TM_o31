@@ -18,8 +18,10 @@ class EvidenceScanner:
         self.config = config
         self.kb_keywords = self._load_keywords()
         self.kb_rules = self._load_rules()
+        self.kb_sast_rules = self._load_sast_rules()
         self.keywords = self._build_keyword_map()
         self.rules = self._prepare_rules()
+        self.sast_rules = self._prepare_sast_rules()
 
     def _load_keywords(self) -> Dict:
         """Load keyword knowledge base from YAML."""
@@ -57,6 +59,16 @@ class EvidenceScanner:
             print(f"Warning: Could not load rules KB: {e}")
             return {"rules": []}
 
+    def _load_sast_rules(self) -> Dict:
+        """Load SAST rules knowledge base from YAML."""
+        path = getattr(self.config, "script_dir", Path(__file__).parent.parent) / "knowledge-base" / "kb-sast-rules.yaml"
+        try:
+            with open(path, "r") as f:
+                return yaml.safe_load(f) or {"rules": []}
+        except Exception as e:
+            print(f"Warning: Could not load SAST rules KB: {e}")
+            return {"rules": []}
+
     def _prepare_rules(self) -> List[Dict[str, Any]]:
         """Normalize and compile rule patterns for faster scanning."""
         prepared = []
@@ -79,6 +91,28 @@ class EvidenceScanner:
                 "_condition": condition,
             })
 
+        return prepared
+
+    def _prepare_sast_rules(self) -> List[Dict[str, Any]]:
+        """Normalize and compile SAST regex rules."""
+        prepared = []
+        for rule in self.kb_sast_rules.get("rules", []) if isinstance(self.kb_sast_rules, dict) else []:
+            if not isinstance(rule, dict):
+                continue
+            patterns = rule.get("patterns", []) or []
+            not_patterns = rule.get("not_patterns", []) or []
+            compiled_patterns = self._compile_patterns(patterns)
+            compiled_not_patterns = self._compile_patterns(not_patterns)
+            target_exts = [ext.lower() for ext in (rule.get("target_extensions", []) or [])]
+            condition = (rule.get("condition") or "OR").upper()
+
+            prepared.append({
+                **rule,
+                "_compiled_patterns": compiled_patterns,
+                "_compiled_not_patterns": compiled_not_patterns,
+                "_target_extensions": target_exts,
+                "_condition": condition,
+            })
         return prepared
 
     def _compile_patterns(self, patterns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -113,6 +147,7 @@ class EvidenceScanner:
             "config_files": [],
             "keyword_hits": [],
             "rule_hits": [],
+            "sast_hits": [],
             "auth_hints": [],
             "db_hints": [],
             "risky_config_hints": [],
@@ -146,7 +181,7 @@ class EvidenceScanner:
                     pass
 
         # Calculate counts
-        for key in ["openapi_files", "db_migration_files", "config_files"]:
+        for key in ["openapi_files", "db_migration_files", "config_files", "sast_hits"]:
             evidence["file_counts"][key] = len(evidence[key])
         evidence["file_counts"]["rule_hits"] = len(evidence.get("rule_hits", []))
 
@@ -187,6 +222,7 @@ class EvidenceScanner:
                 content = f.read()
                 self._find_keywords(content, str(rel_path), evidence)
                 self._find_rules(content, str(rel_path), rel_path.suffix.lower(), evidence)
+                self._find_sast_rules(content, str(rel_path), rel_path.suffix.lower(), evidence)
         except Exception:
             pass
 
@@ -254,6 +290,68 @@ class EvidenceScanner:
                 "severity": rule.get("severity", "MEDIUM"),
                 "cwe": rule.get("cwe", "unknown"),
             })
+
+    def _find_sast_rules(self, content: str, file_path: str, file_ext: str, evidence: Dict):
+        """Evaluate SAST regex rules line by line."""
+        lines = content.splitlines()
+        for rule in self.sast_rules:
+            target_exts = rule.get("_target_extensions", [])
+            if target_exts and file_ext not in target_exts:
+                continue
+
+            for idx, line in enumerate(lines, 1):
+                if not self._sast_rule_matches(rule, line):
+                    continue
+
+                hit = {
+                    "rule_id": rule.get("id", "unknown"),
+                    "file_path": file_path,
+                    "line": idx,
+                    "category": rule.get("category", "unknown"),
+                    "sub_category": rule.get("sub_category", "unknown"),
+                    "severity": rule.get("severity", "MEDIUM"),
+                    "cwe": rule.get("cwe", "unknown"),
+                }
+
+                # Avoid duplicate line-level entries
+                if not any(
+                    h.get("rule_id") == hit["rule_id"] and h.get("file_path") == hit["file_path"] and h.get("line") == hit["line"]
+                    for h in evidence.get("sast_hits", [])
+                ):
+                    evidence.setdefault("sast_hits", []).append(hit)
+
+                # Ensure rule_hits includes SAST hits for threat matching
+                if not any(
+                    h.get("rule_id") == hit["rule_id"] and h.get("file_path") == hit["file_path"]
+                    for h in evidence.get("rule_hits", [])
+                ):
+                    evidence["rule_hits"].append({
+                        "rule_id": hit["rule_id"],
+                        "file_path": hit["file_path"],
+                        "category": hit["category"],
+                        "sub_category": hit["sub_category"],
+                        "severity": hit["severity"],
+                        "cwe": hit["cwe"],
+                    })
+
+    def _sast_rule_matches(self, rule: Dict[str, Any], line: str) -> bool:
+        """Check if a line matches a SAST rule with AND/OR semantics and NOT filters."""
+        patterns = rule.get("_compiled_patterns", [])
+        not_patterns = rule.get("_compiled_not_patterns", [])
+        condition = rule.get("_condition", "OR")
+
+        # NOT patterns block any match
+        for pat in not_patterns:
+            if pat["pattern"].search(line):
+                return False
+
+        if not patterns:
+            return False
+
+        matches = [bool(pat["pattern"].search(line)) for pat in patterns]
+        if condition == "AND":
+            return all(matches)
+        return any(matches)
 
     def _rule_matches(self, rule: Dict[str, Any], content: str) -> bool:
         """Check if a rule matches content using AND/OR with NOT patterns."""
