@@ -200,7 +200,7 @@ graph TB
 flowchart TD
     Start([User invokes tm-scan]) --> Parse[Parse CLI arguments]
     Parse --> Config[Load Configuration]
-    Config --> Auth[Authenticate<br/>GitHub Token / gh CLI]
+    Config --> Auth[Authenticate: GitHub Token or gh CLI]
 
     Auth --> Mode{Scan Mode?}
 
@@ -208,41 +208,41 @@ flowchart TD
     Mode -->|Organization| Inv[Inventory: Fetch Repos]
 
     Inv --> Filter[Filter: Time + Allowlist]
-    Filter --> Select[Selector: Score & Prioritize]
+    Filter --> Select[Selector: Score and Prioritize]
     Select --> DryRun{Dry Run?}
     DryRun -->|Yes| OutputDry[Output selection list]
-    DryRun -->|No| Clone[Cloner: Git Clone/Update]
+    DryRun -->|No| Clone[Cloner: Git Clone or Update]
 
     Local --> Scan
     Clone --> Scan[Scanner: Evidence Discovery]
 
-    Scan --> FileScan[Walk directory tree<br/>Skip excluded dirs]
-    FileScan --> Pattern[File pattern matching<br/>OpenAPI/DB/Config files]
-    Pattern --> Content[Content scanning<br/>Keywords + Regex rules]
+    Scan --> FileScan[Walk directory tree. Skip excluded dirs]
+    FileScan --> Pattern[File pattern matching OpenAPI DB Config]
+    Pattern --> Content[Content scanning Keywords + Regex rules]
 
-    Content --> Evidence[Collect evidence:<br/>keyword_hits, rule_hits,<br/>auth_hints, db_hints]
+    Content --> Evidence[Collect evidence: keyword_hits, rule_hits, auth_hints, db_hints]
     Evidence --> SaveEvid[Save evidence.json]
 
-    SaveEvid --> Gitleaks{Gitleaks<br/>enabled?}
-    Gitleaks -->|Yes| SecretScan[gitleaks detect<br/>Secret scanning]
+    SaveEvid --> Gitleaks{Gitleaks enabled?}
+    Gitleaks -->|Yes| SecretScan[gitleaks detect Secret scanning]
     Gitleaks -->|No| SyftCheck
     SecretScan --> SaveGL[Save gitleaks-summary.json]
 
-    SaveGL --> SyftCheck{Syft<br/>enabled?}
-    SyftCheck -->|Yes| SBOM[syft scan<br/>SBOM generation]
+    SaveGL --> SyftCheck{Syft enabled?}
+    SyftCheck -->|Yes| SBOM[syft scan SBOM generation]
     SyftCheck -->|No| Match
     SBOM --> SaveSyft[Save sbom-summary.json]
 
-    SaveSyft --> Match[Match Threats:<br/>Keywords × KB<br/>Rules × KB]
+    SaveSyft --> Match[Match Threats: Keywords x KB Rules x KB]
     Match --> DREAD[Calculate DREAD scores]
 
-    DREAD --> QualityGate{DREAD avg<br/>≥ 8.0?}
-    QualityGate -->|Yes| Fail[Exit non-zero<br/>Critical threshold]
+    DREAD --> QualityGate{DREAD avg >= 8.0?}
+    QualityGate -->|Yes| Fail[Exit non-zero Critical threshold]
     QualityGate -->|No| Generate[Generate Reports]
 
-    Generate --> MD[Markdown Report<br/>+ Mermaid DFD]
-    Generate --> SARIF[SARIF Report<br/>For Security tab]
-    Generate --> PDF{PDF<br/>enabled?}
+    Generate --> MD[Markdown Report + Mermaid DFD]
+    Generate --> SARIF[SARIF Report For Security tab]
+    Generate --> PDF{PDF enabled?}
 
     PDF -->|Yes| RenderPDF[Render PDF Report]
     PDF -->|No| Complete
@@ -259,27 +259,27 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph Input["Input Sources"]
-        KB_Keywords[kb-keywords.yaml<br/>150+ keywords]
-        KB_Rules[kb-rules.yaml<br/>Advanced regex patterns]
-        FilePatterns[File patterns<br/>OpenAPI/DB/Config]
+        KB_Keywords[kb-keywords.yaml 150+ keywords]
+        KB_Rules[kb-rules.yaml Advanced regex patterns]
+        FilePatterns[File patterns OpenAPI DB Config]
     end
 
     subgraph Scanner["EvidenceScanner Engine"]
         Walk[Walk directory tree]
-        Filter[Filter excluded dirs:<br/>.git, node_modules,<br/>vendor, build, dist]
+        Filter[Filter excluded dirs git node_modules vendor build]
         Check[Check file patterns]
         Read[Read file content]
         MatchKW[Match keywords]
         MatchRules[Match regex rules]
-        ExtractHints[Extract hints:<br/>auth, db, secrets]
+        ExtractHints[Extract hints auth db secrets]
     end
 
     subgraph Output["Evidence Collection"]
-        KeywordHits[keyword_hits<br/>Category, priority, file]
-        RuleHits[rule_hits<br/>Rule ID, severity, CWE]
-        AuthHints[auth_hints<br/>Auth mechanisms found]
-        DBHints[db_hints<br/>Database types]
-        RiskyConfigs[risky_config_hints<br/>URLs, credentials]
+        KeywordHits[keyword_hits Category priority file]
+        RuleHits[rule_hits Rule ID severity CWE]
+        AuthHints[auth_hints Auth mechanisms found]
+        DBHints[db_hints Database types]
+        RiskyConfigs[risky_config_hints URLs credentials]
     end
 
     KB_Keywords --> MatchKW
@@ -307,12 +307,12 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph Evidence["Evidence from Scanner"]
-        EK[keyword_hits<br/>Set of keywords]
-        ER[rule_hits<br/>Set of rule IDs]
+        EK[keyword_hits Set of keywords]
+        ER[rule_hits Set of rule IDs]
     end
 
     subgraph Knowledge["Knowledge Base"]
-        KT[kb-threats.yaml<br/>Threat definitions]
+        KT[kb-threats.yaml Threat definitions]
     end
 
     subgraph Process["Matching Engine"]
@@ -327,8 +327,8 @@ flowchart LR
     end
 
     subgraph Output["Matched Threats"]
-        MT[Relevant threats<br/>With evidence counts]
-        Details[Keyword hits,<br/>Rule hits,<br/>File locations]
+        MT[Relevant threats With evidence counts]
+        Details[Keyword hits Rule hits File locations]
     end
 
     EK --> IntersectK
@@ -366,16 +366,16 @@ flowchart TD
         Risk[Calculate risk level]
         DFD[Generate Mermaid DFD]
         STRIDE[Build STRIDE distribution]
-        Assets[Map assets/flows<br/>with CIA triad]
-        Details[Generate detailed<br/>threat sections]
+        Assets[Map assets and flows with CIA triad]
+        Details[Generate detailed threat sections]
         Recs[Generate recommendations]
         Quest[Generate reviewer questions]
     end
 
     subgraph Outputs["Report Formats"]
-        MD[threatmodel-report.md<br/>Full Markdown]
-        SARIF[threatmodel-report.sarif<br/>SARIF v2.1.0]
-        PDF[threatmodel-report.pdf<br/>Optional PDF]
+        MD[threatmodel-report.md Full Markdown]
+        SARIF[threatmodel-report.sarif SARIF v2.1.0]
+        PDF[threatmodel-report.pdf Optional PDF]
     end
 
     Evidence --> Match
@@ -467,17 +467,17 @@ flowchart LR
     end
 
     subgraph Pipeline["Data Pipeline"]
-        Inv[Inventory<br/>List repos]
-        Sel[Selector<br/>Prioritize repos]
-        Cln[Cloner<br/>Get code]
-        Scn[Scanner<br/>Find evidence]
-        Mat[Matcher<br/>Map threats]
-        Rep[Reporter<br/>Generate output]
+        Inv[Inventory List repos]
+        Sel[Selector Prioritize repos]
+        Cln[Cloner Get code]
+        Scn[Scanner Find evidence]
+        Mat[Matcher Map threats]
+        Rep[Reporter Generate output]
     end
 
     subgraph Storage["Data Storage"]
-        WS[Workspace<br/>~/tm-workspace]
-        OUT[Output<br/>~/tm-output]
+        WS[Workspace tm-workspace]
+        OUT[Output tm-output]
     end
 
     subgraph CI["CI/CD"]
@@ -591,74 +591,74 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    subgraph Phase1["Phase 1: Initialization"]
+    subgraph P1["Phase 1: Initialization"]
         P1A[1. Parse CLI arguments]
         P1B[2. Load configuration]
         P1C[3. Resolve authentication]
         P1D[4. Setup logging]
     end
 
-    subgraph Phase2["Phase 2: Repository Discovery"]
-        P2A[5. Fetch repository list<br/>via GitHub API or gh CLI]
-        P2B[6. Apply filters:<br/>- Time-based (since-days)<br/>- Allowlist (repos-file)<br/>- Exclude archived]
-        P2C[7. Score & prioritize repos<br/>based on signals]
+    subgraph P2["Phase 2: Repository Discovery"]
+        P2A[5. Fetch repository list via GitHub API or gh CLI]
+        P2B[6. Apply filters: Time, Allowlist, Exclude archived]
+        P2C[7. Score and prioritize repos based on signals]
         P2D[8. Select top N repos]
     end
 
-    subgraph Phase3["Phase 3: Code Acquisition"]
-        P3A[9. Clone or update repos<br/>Shallow clone (depth=1)]
+    subgraph P3["Phase 3: Code Acquisition"]
+        P3A[9. Clone or update repos. Shallow clone depth 1]
         P3B[10. Verify repo integrity]
     end
 
-    subgraph Phase4["Phase 4: Evidence Discovery"]
-        P4A[11. Walk directory tree<br/>Skip: .git, node_modules,<br/>vendor, build, dist]
-        P4B[12. File pattern matching<br/>- OpenAPI specs<br/>- DB migrations<br/>- Config files]
-        P4C[13. Content scanning<br/>- Keyword matching (150+)<br/>- Regex rules (50+)<br/>- Pattern: AND/OR/NOT]
-        P4D[14. Categorize findings<br/>- auth_hints<br/>- db_hints<br/>- risky_configs]
+    subgraph P4["Phase 4: Evidence Discovery"]
+        P4A[11. Walk directory tree. Skip excluded dirs]
+        P4B[12. File pattern matching for OpenAPI, DB, Config]
+        P4C[13. Content scanning: Keywords and Regex rules]
+        P4D[14. Categorize findings: auth, db, risky configs]
     end
 
-    subgraph Phase5["Phase 5: Enhanced Scanning"]
-        P5A[15. Gitleaks secret scan<br/>Find: passwords, tokens,<br/>API keys, certificates]
-        P5B[16. Syft SBOM generation<br/>Inventory: packages,<br/>languages, types]
+    subgraph P5["Phase 5: Enhanced Scanning"]
+        P5A[15. Gitleaks secret scan. Find passwords and tokens]
+        P5B[16. Syft SBOM generation. Inventory packages]
     end
 
-    subgraph Phase6["Phase 6: Threat Mapping"]
+    subgraph P6["Phase 6: Threat Mapping"]
         P6A[17. Load threat knowledge base]
-        P6B[18. Match evidence to threats<br/>Keywords × KB<br/>Rules × KB]
-        P6C[19. Calculate DREAD scores<br/>per matched threat]
-        P6D[20. Aggregate threat stats<br/>STRIDE distribution<br/>Risk summary]
+        P6B[18. Match evidence to threats using KB]
+        P6C[19. Calculate DREAD scores per threat]
+        P6D[20. Aggregate stats: STRIDE, Risk summary]
     end
 
-    subgraph Phase7["Phase 7: Quality Gate"]
+    subgraph P7["Phase 7: Quality Gate"]
         P7A[21. Calculate average DREAD]
-        P7B[22. Check threshold ≥ 8.0]
+        P7B[22. Check threshold 8.0]
         P7C[23. Pass or fail scan]
     end
 
-    subgraph Phase8["Phase 8: Report Generation"]
-        P8A[24. Generate Markdown report<br/>- Executive summary<br/>- Mermaid DFD<br/>- STRIDE table<br/>- Detailed threats<br/>- Recommendations]
-        P8B[25. Generate SARIF report<br/>CWE-mapped results]
-        P8C[26. Save evidence.json<br/>Raw findings]
+    subgraph P8["Phase 8: Report Generation"]
+        P8A[24. Generate Markdown report with all sections]
+        P8B[25. Generate SARIF report CWE-mapped]
+        P8C[26. Save evidence JSON raw findings]
         P8D[27. Optional PDF render]
     end
 
-    subgraph Phase9["Phase 9: CI/CD Actions"]
-        P9A[28. Upload SARIF to<br/>GitHub Security tab]
+    subgraph P9["Phase 9: CI/CD Actions"]
+        P9A[28. Upload SARIF to GitHub Security tab]
         P9B{29. Scan failed?}
-        P9C[30. Trigger PR reviewer<br/>- Load evidence.json<br/>- Match to PR diff<br/>- Post inline comments]
+        P9C[30. Trigger PR reviewer with inline comments]
     end
 
-    Phase1 --> Phase2
-    Phase2 -->|Local mode skip| Phase4
-    Phase2 -->|Org mode| Phase3
-    Phase3 --> Phase4
-    Phase4 --> Phase5
-    Phase5 --> Phase6
-    Phase6 --> Phase7
-    Phase7 --> Phase8
-    Phase8 --> Phase9
-    Phase9 -->|Yes| P9C
-    Phase9 -->|No| Done([Scan Complete])
+    P1 --> P2
+    P2 -->|Local skip| P4
+    P2 -->|Org mode| P3
+    P3 --> P4
+    P4 --> P5
+    P5 --> P6
+    P6 --> P7
+    P7 --> P8
+    P8 --> P9
+    P9 -->|Yes| P9C
+    P9 -->|No| Done([Scan Complete])
 ```
 
 ### Workflow Timing Diagram
@@ -706,11 +706,11 @@ tm-scan fuses five complementary security frameworks into a unified threat model
 ```mermaid
 graph LR
     subgraph Dimensions["5-Dimensional Framework"]
-        STRIDE[STRIDE<br/>Spoofing<br/>Tampering<br/>Repudiation<br/>Info Disclosure<br/>DoS<br/>Elevation of Privilege]
-        PASTA[PASTA<br/>Threat Actor<br/>Attack Surface<br/>Attack Vector<br/>Business Impact]
-        LINDDUN[LINDDUN<br/>Linkability<br/>Identifiability<br/>Non-repudiation<br/>Detectability<br/>Disclosure of Info<br/>Unawareness<br/>Non-compliance]
-        CWE[CWE<br/>MITRE Weakness<br/>Enumeration]
-        DREAD[DREAD<br/>Damage<br/>Reproducibility<br/>Exploitability<br/>Affected Users<br/>Discoverability]
+        STRIDE[STRIDE: Spoofing Tampering Repudiation Info Disclosure DoS Elevation of Privilege]
+        PASTA[PASTA: Threat Actor Attack Surface Attack Vector Business Impact]
+        LINDDUN[LINDDUN: Linkability Identifiability Non-repudiation Detectability Disclosure Unawareness Non-compliance]
+        CWE[CWE: MITRE Weakness Enumeration]
+        DREAD[DREAD: Damage Reproducibility Exploitability Affected Users Discoverability]
     end
 
     Evidence[Code Evidence] --> STRIDE
