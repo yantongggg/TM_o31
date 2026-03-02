@@ -784,12 +784,18 @@ class ThreatModelReporter:
             threat = item.get("threat", {})
             rid = rule_id(threat)
             if rid not in rule_ids:
-                rules.append({
+                rule_obj = {
                     "id": rid,
                     "name": threat.get("name"),
                     "shortDescription": {"text": threat.get("description", "")},
-                    "helpUri": None,
-                })
+                }
+                
+                # Only add helpUri if it exists and is a non-empty string
+                help_uri = threat.get("reference_url") or threat.get("helpUri")
+                if help_uri and isinstance(help_uri, str):
+                    rule_obj["helpUri"] = help_uri
+    
+                rules.append(rule_obj)
                 rule_ids.add(rid)
 
             dread_score = self._average_dread(threat.get("dread_score", {}))
