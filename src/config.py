@@ -53,6 +53,8 @@ class Config:
         github_token: Optional[str] = None,
         github_enterprise_url: Optional[str] = None,
         github_api_url: Optional[str] = None,
+        local_dir: Optional[str] = None,
+        fail_on_critical: bool = False,
     ):
         # Load .env file if present
         env_vars = load_env_file()
@@ -68,28 +70,28 @@ class Config:
         self.no_sbom = no_sbom
         self.pdf_reports = pdf_reports
 
-        # GitHub token priority: parameter > .env file > environment variable
-        self.github_token = (
-        local_dir: Optional[str] = None,
-        fail_on_critical: bool = False,
-            github_token or
-            env_vars.get("GITHUB_TOKEN") or
-            env_vars.get("TM_GITHUB_TOKEN") or
-            os.environ.get("GITHUB_TOKEN") or
-            os.environ.get("TM_GITHUB_TOKEN")
-        )
+        # Directories
+        home = Path.home()
+        self.workspace_dir = Path(workspace_dir or home / "tm-workspace")
+        self.output_dir = Path(output_dir or home / "tm-output")
+
+        # GitHub token resolution: CLI arg > CI env > gh CLI
+        self.github_token = self._resolve_github_token(github_token)
 
         # GitHub API URL priority: parameter > .env file > environment variable > default
-        # GITHUB_API_URL is the new preferred variable; GITHUB_ENTERPRISE_URL kept for backward compatibility
         self.github_api_url = (
             github_api_url or
             env_vars.get("GITHUB_API_URL") or
             os.environ.get("GITHUB_API_URL") or
             github_enterprise_url or
-        # GitHub token resolution: CLI arg > CI env > gh CLI
-        self.github_token = self._resolve_github_token(github_token)
-        self.workspace_dir = Path(workspace_dir or home / "tm-workspace")
-        self.output_dir = Path(output_dir or home / "tm-output")
+            env_vars.get("GITHUB_ENTERPRISE_URL") or
+            os.environ.get("GITHUB_ENTERPRISE_URL")
+        )
+        self.github_enterprise_url = github_enterprise_url
+
+        # Local directory mode and fail-on-critical flag
+        self.local_dir = Path(local_dir).expanduser().resolve() if local_dir else None
+        self.fail_on_critical = fail_on_critical
 
         # Knowledge base paths
         self.script_dir = Path(__file__).parent.parent
@@ -121,8 +123,6 @@ class Config:
         """Get the log file path for this run."""
         return self.logs_dir / f"run-{self.run_id}.log"
 
-        self.local_dir = Path(local_dir).expanduser().resolve() if local_dir else None
-        self.fail_on_critical = fail_on_critical
     def to_dict(self) -> dict:
         """Convert config to dictionary for JSON serialization."""
         return {
