@@ -1,4 +1,4 @@
-# tm-scan — Enterprise Agentic Threat Modeling Engine
+# TM-scan — Enterprise Agentic Threat Modeling Engine
 
 <div align="center">
 
