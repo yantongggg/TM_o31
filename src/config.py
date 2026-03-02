@@ -96,7 +96,7 @@ class Config:
         # Knowledge base paths
         self.script_dir = Path(__file__).parent.parent
         self.kb_keywords_path = self.script_dir / "knowledge-base" / "kb-keywords.yaml"
-        self.kb_rules_path = self.script_dir / "knowledge-base" / "kb-rules.yaml"
+        self.kb_rules_path = self.script_dir / "knowledge-base" / "kb-sast-rules.yaml"
         self.kb_threats_path = self.script_dir / "knowledge-base" / "kb-threats.yaml"
 
         # Run timestamp
