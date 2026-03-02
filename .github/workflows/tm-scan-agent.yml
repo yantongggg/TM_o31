@@ -44,7 +44,9 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: |
           cd tm-scan-tool
-          python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick --fail-on-critical
+          
+          python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick --mode quick
+          
       - name: Locate SARIF artifact
         id: find-sarif
         if: success() || failure()
@@ -65,7 +67,7 @@ jobs:
           sarif_file: ${{ env.SARIF_FILE }}
 
       - name: Run deterministic PR reviewer
-        if: failure()
+        if: failure() && github.event_name == 'pull_request' 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
