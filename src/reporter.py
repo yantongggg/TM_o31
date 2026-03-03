@@ -175,9 +175,14 @@ class ThreatModelReporter:
             edges = [edge.replace("|Threats|", f"|{threat_labels}|") for edge in edges]
 
         class_lines = []
+        # if high_nodes:
+        #     class_lines.append("    classDef highRisk fill:#ffcccc,stroke:#cc0000;")
+        #     class_lines.append(f"    class {' '.join(high_nodes)} highRisk;")
         if high_nodes:
             class_lines.append("    classDef highRisk fill:#ffcccc,stroke:#cc0000;")
-            class_lines.append(f"    class {' '.join(high_nodes)} highRisk;")
+            
+            for node in high_nodes:
+                class_lines.append(f"    class {node} highRisk;")
 
         lines = ["## Architecture Overview", "", "```mermaid", "flowchart TD"]
         lines.extend(node_defs)
