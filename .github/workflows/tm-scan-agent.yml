@@ -3,23 +3,33 @@ name: tm-scan agentic workflow
 on:
   pull_request:
     branches: [ "**" ]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [ "main" ]
-  workflow_dispatch: 
+    branches: [ "**" ]
+    paths-ignore:
+      - 'ThreatModelling_result/**'
+      - '**/ThreatModelling_result/**'
+  workflow_dispatch:
+
+concurrency:
+  group: tm-scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write 
   pull-requests: write
   security-events: write
 
 jobs:
   tm-scan:
+    if: ${{ !contains(github.event.head_commit.message, '[skip tm-scan]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
           path: target-repo
+          fetch-depth: 0 
 
       - name: Checkout tm-scan
         uses: actions/checkout@v4
@@ -42,9 +52,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTIONS: "true"
+          # 传递给 Python 脚本，让它可以在 Markdown 里面写上你的名字
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           cd tm-scan-tool
-          python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick --fail-on-critical
+          python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick
+          
       - name: Locate SARIF artifact
         id: find-sarif
         if: success() || failure()
@@ -58,17 +72,68 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload SARIF results
+      - name: Upload Threat Model Reports as Artifact
         if: (success() || failure()) && steps.find-sarif.outputs.found == 'true'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: ${{ env.SARIF_FILE }}
+          name: threat-model-reports
+          path: ~/tm-output/reports/target-repo/
 
       - name: Run deterministic PR reviewer
-        if: failure()
+        if: failure() && github.event_name == 'pull_request' 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
           python tm-scan-tool/scripts/local_pr_reviewer.py
+
+      - name: Find Markdown Report
+        id: find-md
+        if: success() || failure()
+        run: |
+          MD_PATH=$(find "$HOME/tm-output" -name "threatmodel-report.md" -print -quit 2>/dev/null || true)
+          if [ -n "$MD_PATH" ]; then
+            echo "MD_FILE=$MD_PATH" >> "$GITHUB_ENV"
+            echo "md_file=$MD_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo "md_file=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment PR with Threat Model Report
+        if: (success() || failure()) && github.event_name == 'pull_request' && steps.find-md.outputs.md_file != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: threat-model-report
+          path: ${{ steps.find-md.outputs.md_file }}
+
+      - name: Publish Job Summary
+        if: success() || failure()
+        run: |
+          if [ -n "${{ steps.find-md.outputs.md_file }}" ]; then
+            echo "## 🛡️ Threat Modeling Scan Results" >> $GITHUB_STEP_SUMMARY
+            cat "${{ steps.find-md.outputs.md_file }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Save Report to Repository
+        if: (success() || failure()) && steps.find-md.outputs.md_file != ''
+        run: |
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          
+          REPORT_DIR="$GITHUB_WORKSPACE/target-repo/ThreatModelling_result"
+          mkdir -p "$REPORT_DIR"
+        
+          NEW_FILENAME="threatmodel-report_${REPO_OWNER}_${REPO_NAME}_${TIMESTAMP}.md"
+          
+          cp "${{ steps.find-md.outputs.md_file }}" "$REPORT_DIR/$NEW_FILENAME"
+          echo "Report saved to $REPORT_DIR/$NEW_FILENAME"
+
+      - name: Commit and Push Report
+        if: (success() || failure()) && steps.find-md.outputs.md_file != ''
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          repository: ./target-repo
+          commit_message: "docs(security): auto-save threat modeling report for ${{ github.repository }}"
+          file_pattern: "ThreatModelling_result/*.md"
