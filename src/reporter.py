@@ -387,7 +387,7 @@ class ThreatModelReporter:
             exploitation = pasta_context.get("attack_vector", "exploits weak validation/authz path")
             business_impact = pasta_context.get("business_impact", "Business impact requires manual validation")
 
-            evidence_rows = self._build_threat_evidence_rows(item)
+            evidence_rows = self._build_threat_evidence_rows(threat, evidence)
             mitigations = self._build_language_specific_mitigations(threat)
 
             lines.extend([
@@ -410,10 +410,7 @@ class ThreatModelReporter:
             ])
 
             if evidence_rows:
-                for row in evidence_rows:
-                    lines.append(
-                        f"| {row['file_path']} | {row['line_number']} | {row['trigger']} | {row['severity']} |"
-                    )
+                lines.extend(evidence_rows)
             else:
                 lines.append("| No matched evidence found | - | - | - |")
 
@@ -425,112 +422,42 @@ class ThreatModelReporter:
 
         return lines
 
-    def _build_threat_evidence_rows(self, matched_threat: Dict[str, Any]) -> List[Dict[str, str]]:
-        """Build exact evidence table rows; prioritize line numbers from sast_hits."""
-        matched_rule_hits = matched_threat.get("matched_rule_hits", []) or []
-        matched_keyword_hits = matched_threat.get("matched_keyword_hits", []) or []
-        matched_sast_hits = matched_threat.get("matched_sast_hits", []) or []
+    def _build_threat_evidence_rows(self, threat: Dict[str, Any], evidence: Dict[str, Any]) -> List[str]:
+        """Build evidence rows using exact SAST/rule/keyword logic."""
+        trigger_rules = set(threat.get("trigger_rules", []) or [])
+        keyword_triggers = [str(item).lower() for item in (threat.get("keywords", []) or [])]
 
-        rows: List[Dict[str, str]] = []
-        seen: Set[Tuple[str, str, str, str]] = set()
+        table_rows: List[str] = []
 
-        # Index line-level evidence by rule_id + file_path
-        sast_line_index: Dict[Tuple[str, str], List[int]] = {}
-        for hit in matched_sast_hits:
+        # 1. Process SAST hits (which have line numbers)
+        for hit in evidence.get("sast_hits", []) or []:
             rule_id = str(hit.get("rule_id", ""))
-            file_path = str(hit.get("file_path", ""))
-            line = self._safe_int(hit.get("line"), default=0)
-            if not rule_id or not file_path or line <= 0:
-                continue
-            key = (rule_id, file_path)
-            sast_line_index.setdefault(key, []).append(line)
+            if rule_id in trigger_rules:
+                line_num = hit.get("line", "N/A")
+                severity = hit.get("severity", "HIGH")
+                filepath = hit.get("file_path", "Unknown")
+                table_rows.append(f"| {filepath} | {line_num} | {rule_id} | {severity} |")
 
-        for key in list(sast_line_index.keys()):
-            sast_line_index[key] = sorted(set(sast_line_index[key]))
+        # 2. Process Rule hits (might have line numbers)
+        for hit in evidence.get("rule_hits", []) or []:
+            rule_id = str(hit.get("rule_id", ""))
+            if rule_id in trigger_rules:
+                line_num = hit.get("line", "N/A")
+                severity = hit.get("severity", "HIGH")
+                filepath = hit.get("file_path", "Unknown")
+                table_rows.append(f"| {filepath} | {line_num} | {rule_id} | {severity} |")
 
-        # 1) Add exact line-level SAST evidence first
-        for hit in sorted(
-            matched_sast_hits,
-            key=lambda item: (
-                str(item.get("file_path", "")),
-                self._safe_int(item.get("line"), default=10**9),
-                str(item.get("rule_id", "")),
-            ),
-        ):
-            file_path = str(hit.get("file_path", "unknown"))
-            line = self._safe_int(hit.get("line"), default=0)
-            line_number = str(line) if line > 0 else "not-captured"
-            trigger = str(hit.get("rule_id", "unknown"))
-            severity = self._normalize_severity(hit.get("severity", "MEDIUM"))
-            key = (file_path, line_number, trigger, severity)
-            if key not in seen:
-                rows.append({
-                    "file_path": file_path,
-                    "line_number": line_number,
-                    "trigger": trigger,
-                    "severity": severity,
-                })
-                seen.add(key)
+        # 3. Process Keyword hits (no line numbers, just print '-')
+        for hit in evidence.get("keyword_hits", []) or []:
+            kw = str(hit.get("keyword", "")).lower()
+            if kw in keyword_triggers:
+                severity = str(hit.get("priority", "MEDIUM")).upper()
+                filepath = hit.get("file_path", "Unknown")
+                table_rows.append(f"| {filepath} | - | {kw} | {severity} |")
 
-        # 2) Add rule hits and map to SAST lines where available
-        for hit in sorted(
-            matched_rule_hits,
-            key=lambda item: (str(item.get("file_path", "")), str(item.get("rule_id", ""))),
-        ):
-            file_path = str(hit.get("file_path", "unknown"))
-            rule_id = str(hit.get("rule_id", "unknown"))
-            severity = self._normalize_severity(hit.get("severity", "MEDIUM"))
-            mapped_lines = sast_line_index.get((rule_id, file_path), [])
-
-            if mapped_lines:
-                for mapped_line in mapped_lines:
-                    row_key = (file_path, str(mapped_line), rule_id, severity)
-                    if row_key not in seen:
-                        rows.append({
-                            "file_path": file_path,
-                            "line_number": str(mapped_line),
-                            "trigger": rule_id,
-                            "severity": severity,
-                        })
-                        seen.add(row_key)
-            else:
-                row_key = (file_path, "not-captured", rule_id, severity)
-                if row_key not in seen:
-                    rows.append({
-                        "file_path": file_path,
-                        "line_number": "not-captured",
-                        "trigger": rule_id,
-                        "severity": severity,
-                    })
-                    seen.add(row_key)
-
-        # 3) Add matched keyword hits as supporting evidence
-        for hit in sorted(
-            matched_keyword_hits,
-            key=lambda item: (str(item.get("file_path", "")), str(item.get("keyword", ""))),
-        ):
-            file_path = str(hit.get("file_path", "unknown"))
-            trigger = str(hit.get("keyword", "unknown"))
-            severity = self._priority_to_severity(str(hit.get("priority", "medium")))
-            row_key = (file_path, "not-captured", trigger, severity)
-            if row_key not in seen:
-                rows.append({
-                    "file_path": file_path,
-                    "line_number": "not-captured",
-                    "trigger": trigger,
-                    "severity": severity,
-                })
-                seen.add(row_key)
-
-        rows.sort(
-            key=lambda row: (
-                row["file_path"],
-                self._line_sort_value(row["line_number"]),
-                -self.SEVERITY_ORDER.get(row["severity"], 2),
-                row["trigger"],
-            )
-        )
-        return rows
+        # Deduplicate rows
+        table_rows = sorted(list(set(table_rows)))
+        return table_rows
 
     def _build_language_specific_mitigations(self, threat: Dict[str, Any]) -> List[str]:
         """Build actionable mitigations with Python/React/TS relevance."""
@@ -588,9 +515,9 @@ class ThreatModelReporter:
             "```mermaid",
             "flowchart TD",
             "    a0[Preconditions: Internet reachability and attacker capability]",
-            f"    a1[Initial Exploitation: {first}]",
-            f"    a2[Privilege/Logic Abuse: {second}]",
-            f"    a3[Lateral Movement: {third}]",
+            f'    a1["Initial Exploitation: {first}"]',
+            f'    a2["Privilege/Logic Abuse: {second}"]',
+            f'    a3["Lateral Movement: {third}"]',
             "    a4[Business Impact: Data breach, fraud, or service disruption]",
             "",
             "    a0 -.-> a1",
