@@ -8,7 +8,7 @@ on:
   workflow_dispatch: 
 
 permissions:
-  contents: read
+  contents: write 
   pull-requests: write
   security-events: write
 
@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: target-repo
+          fetch-depth: 0 
 
       - name: Checkout tm-scan
         uses: actions/checkout@v4
@@ -44,8 +45,8 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: |
           cd tm-scan-tool
-          
-          python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick --mode quick
+          # 修正了你之前的命令，去掉了重复的 --mode quick
+          python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick
           
       - name: Locate SARIF artifact
         id: find-sarif
@@ -60,11 +61,12 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload SARIF results
+      - name: Upload Threat Model Reports as Artifact
         if: (success() || failure()) && steps.find-sarif.outputs.found == 'true'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: ${{ env.SARIF_FILE }}
+          name: threat-model-reports
+          path: ~/tm-output/reports/target-repo/
 
       - name: Run deterministic PR reviewer
         if: failure() && github.event_name == 'pull_request' 
@@ -74,3 +76,48 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
           python tm-scan-tool/scripts/local_pr_reviewer.py
+
+      - name: Find Markdown Report
+        id: find-md
+        if: success() || failure()
+        run: |
+          MD_PATH=$(find "$HOME/tm-output" -name "threatmodel-report.md" -print -quit 2>/dev/null || true)
+          if [ -n "$MD_PATH" ]; then
+            echo "MD_FILE=$MD_PATH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Comment PR with Threat Model Report
+        if: (success() || failure()) && github.event_name == 'pull_request' && env.MD_FILE != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: threat-model-report
+          path: ${{ env.MD_FILE }}
+
+      - name: Publish Job Summary
+        if: success() || failure()
+        run: |
+          if [ -n "${{ env.MD_FILE }}" ]; then
+            echo "## 🛡️ Threat Modeling Scan Results" >> $GITHUB_STEP_SUMMARY
+            cat "${{ env.MD_FILE }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      
+      - name: Save Report to Repository
+        if: (success() || failure()) && env.MD_FILE != ''
+        run: |
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          REPORT_DIR="$GITHUB_WORKSPACE/target-repo/ThreatModelling_result"
+          
+          mkdir -p "$REPORT_DIR"
+          
+          cp "${{ env.MD_FILE }}" "$REPORT_DIR/threatmodel-report_${TIMESTAMP}.md"
+          
+          echo "Report saved to $REPORT_DIR/threatmodel-report_${TIMESTAMP}.md"
+
+      - name: Commit and Push Report
+        if: (success() || failure()) && env.MD_FILE != ''
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          repository: ./target-repo
+          commit_message: "docs(security): auto-save threat modeling report"
+          file_pattern: "ThreatModelling_result/*.md"
