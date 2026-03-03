@@ -7,12 +7,63 @@ import re
 import json
 import yaml
 from pathlib import Path
-from typing import List, Dict, Set, Any
+from typing import List, Dict, Set, Any, Tuple
 from .config import Config
 
 
 class EvidenceScanner:
     """Scans repositories for security-relevant evidence."""
+
+    IGNORED_CONTENT_EXTENSIONS = {
+        ".md",
+        ".txt",
+        ".csv",
+        ".pdf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".lock",
+    }
+
+    ALLOWED_CONTENT_EXTENSIONS = {
+        # Source code
+        ".py",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".java",
+        ".kt",
+        ".go",
+        ".rb",
+        ".php",
+        ".cs",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".swift",
+        ".rs",
+        ".scala",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        # Configuration / structured data
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        # DB migrations
+        ".sql",
+    }
 
     def __init__(self, config: Config):
         self.config = config
@@ -151,7 +202,10 @@ class EvidenceScanner:
             "auth_hints": [],
             "db_hints": [],
             "risky_config_hints": [],
-            "file_counts": {},
+            "file_counts": {
+                "skipped_ignored_extensions": 0,
+                "skipped_non_allowlisted": 0,
+            },
         }
 
         if not repo_path.exists():
@@ -170,6 +224,19 @@ class EvidenceScanner:
 
                 # Check file patterns
                 self._check_file_patterns(rel_path, file_path, evidence)
+
+                # Hard exclusion + strict allowlist for content scanning
+                should_scan, skip_reason = self._should_scan_content(rel_path)
+                if not should_scan:
+                    if skip_reason == "ignored_extension":
+                        evidence["file_counts"]["skipped_ignored_extensions"] = (
+                            evidence["file_counts"].get("skipped_ignored_extensions", 0) + 1
+                        )
+                    elif skip_reason == "non_allowlisted_extension":
+                        evidence["file_counts"]["skipped_non_allowlisted"] = (
+                            evidence["file_counts"].get("skipped_non_allowlisted", 0) + 1
+                        )
+                    continue
 
                 # Scan content for keywords (in quick mode, limit file size)
                 try:
@@ -217,6 +284,10 @@ class EvidenceScanner:
 
     def _scan_file_content(self, file_path: Path, rel_path: Path, evidence: Dict):
         """Scan file content for keyword hits."""
+        should_scan, _ = self._should_scan_content(rel_path)
+        if not should_scan:
+            return
+
         try:
             with open(file_path, "r", errors="ignore") as f:
                 content = f.read()
@@ -225,6 +296,26 @@ class EvidenceScanner:
                 self._find_sast_rules(content, str(rel_path), rel_path.suffix.lower(), evidence)
         except Exception:
             pass
+
+    def _should_scan_content(self, rel_path: Path) -> Tuple[bool, str]:
+        """Return scan decision with reason for telemetry."""
+        filename = rel_path.name.lower()
+        suffixes = [suffix.lower() for suffix in rel_path.suffixes]
+
+        # Hard deny-list first (docs/media/lock and similar)
+        if any(suffix in self.IGNORED_CONTENT_EXTENSIONS for suffix in suffixes):
+            return False, "ignored_extension"
+
+        # Explicitly allow common env config naming patterns
+        if filename == ".env" or filename.startswith(".env.") or filename.endswith(".env"):
+            return True, "allowed"
+
+        # Allow only known source/config/sql extensions
+        if any(suffix in self.ALLOWED_CONTENT_EXTENSIONS for suffix in suffixes):
+            return True, "allowed"
+
+        # Skip everything else by default to prevent noisy false positives
+        return False, "non_allowlisted_extension"
 
     def _find_keywords(self, content: str, file_path: str, evidence: Dict):
         """Find keywords in content and categorize them."""

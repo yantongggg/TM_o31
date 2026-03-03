@@ -119,25 +119,13 @@ jobs:
         
           NEW_FILENAME="threatmodel-report_${REPO_OWNER}_${REPO_NAME}_${TIMESTAMP}.md"
           
-<<<<<<< HEAD
-          cp "${{ steps.find-md.outputs.md_file }}" "$REPORT_DIR/$NEW_FILENAME"
-          echo "Report saved to $REPORT_DIR/$NEW_FILENAME"
-
-      - name: Commit and Push Report
-        if: (success() || failure()) && steps.find-md.outputs.md_file != ''
-=======
           cp "${{ env.MD_FILE }}" "$REPORT_DIR/$NEW_FILENAME"
           echo "Report saved to $REPORT_DIR/$NEW_FILENAME"
 
       - name: Commit and Push Report
         if: (success() || failure()) && env.MD_FILE != ''
->>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           repository: ./target-repo
           commit_message: "docs(security): auto-save threat modeling report for ${{ github.repository }}"
-<<<<<<< HEAD
           file_pattern: "ThreatModelling_result/*.md"
-=======
-          file_pattern: "ThreatModelling_result/*.md"
->>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
