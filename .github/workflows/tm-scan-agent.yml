@@ -5,6 +5,7 @@ on:
     branches: [ "**" ]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
+<<<<<<< HEAD
     branches: [ "**" ]
     paths-ignore:
       - 'ThreatModelling_result/**'
@@ -14,6 +15,12 @@ on:
 concurrency:
   group: tm-scan-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+=======
+    branches: [ "main" ]
+    paths-ignore:
+      - 'ThreatModelling_result/**' 
+  workflow_dispatch: 
+>>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
 
 permissions:
   contents: write 
@@ -95,6 +102,7 @@ jobs:
           MD_PATH=$(find "$HOME/tm-output" -name "threatmodel-report.md" -print -quit 2>/dev/null || true)
           if [ -n "$MD_PATH" ]; then
             echo "MD_FILE=$MD_PATH" >> "$GITHUB_ENV"
+<<<<<<< HEAD
             echo "md_file=$MD_PATH" >> "$GITHUB_OUTPUT"
           else
             echo "md_file=" >> "$GITHUB_OUTPUT"
@@ -106,10 +114,21 @@ jobs:
         with:
           header: threat-model-report
           path: ${{ steps.find-md.outputs.md_file }}
+=======
+          fi
+
+      - name: Comment PR with Threat Model Report
+        if: (success() || failure()) && github.event_name == 'pull_request' && env.MD_FILE != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: threat-model-report
+          path: ${{ env.MD_FILE }}
+>>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
 
       - name: Publish Job Summary
         if: success() || failure()
         run: |
+<<<<<<< HEAD
           if [ -n "${{ steps.find-md.outputs.md_file }}" ]; then
             echo "## 🛡️ Threat Modeling Scan Results" >> $GITHUB_STEP_SUMMARY
             cat "${{ steps.find-md.outputs.md_file }}" >> $GITHUB_STEP_SUMMARY
@@ -117,6 +136,15 @@ jobs:
 
       - name: Save Report to Repository
         if: (success() || failure()) && steps.find-md.outputs.md_file != ''
+=======
+          if [ -n "${{ env.MD_FILE }}" ]; then
+            echo "## 🛡️ Threat Modeling Scan Results" >> $GITHUB_STEP_SUMMARY
+            cat "${{ env.MD_FILE }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Save Report to Repository
+        if: (success() || failure()) && env.MD_FILE != ''
+>>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
         run: |
           TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
           REPO_OWNER="${{ github.repository_owner }}"
@@ -127,13 +155,25 @@ jobs:
         
           NEW_FILENAME="threatmodel-report_${REPO_OWNER}_${REPO_NAME}_${TIMESTAMP}.md"
           
+<<<<<<< HEAD
           cp "${{ steps.find-md.outputs.md_file }}" "$REPORT_DIR/$NEW_FILENAME"
           echo "Report saved to $REPORT_DIR/$NEW_FILENAME"
 
       - name: Commit and Push Report
         if: (success() || failure()) && steps.find-md.outputs.md_file != ''
+=======
+          cp "${{ env.MD_FILE }}" "$REPORT_DIR/$NEW_FILENAME"
+          echo "Report saved to $REPORT_DIR/$NEW_FILENAME"
+
+      - name: Commit and Push Report
+        if: (success() || failure()) && env.MD_FILE != ''
+>>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           repository: ./target-repo
           commit_message: "docs(security): auto-save threat modeling report for ${{ github.repository }}"
+<<<<<<< HEAD
           file_pattern: "ThreatModelling_result/*.md"
+=======
+          file_pattern: "ThreatModelling_result/*.md"
+>>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
