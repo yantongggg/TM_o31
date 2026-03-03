@@ -261,72 +261,112 @@ class ThreatModelReporter:
         evidence: Dict[str, Any],
         relevant_threats: List[Dict[str, Any]],
     ) -> List[str]:
-        """2) ARCHITECTURE MODEL with strict Mermaid syntax."""
-        has_auth = bool(evidence.get("auth_hints"))
-        has_db = bool(evidence.get("db_hints"))
-
-        top_risk = "Low"
-        for item in relevant_threats[:5]:
-            risk = self._classify_risk_level(item.get("threat", {}), item.get("evidence_count", 0))
-            if risk == "Critical":
-                top_risk = "Critical"
-                break
-            if risk == "High":
-                top_risk = "High"
-
+        """2) ARCHITECTURE MODEL with enterprise DFD Mermaid."""
         lines: List[str] = [
             "## ARCHITECTURE MODEL",
             "",
             "```mermaid",
-            "flowchart TD",
-            "    subgraph z1[Untrusted Zone]",
-            "        attacker((Threat Actor))",
-            "        user[End User / Browser]",
-            "    end",
-            "",
-            "    subgraph z2[Application Zone]",
-            "        gateway[API Gateway / Web Layer]",
-            "        appsvc[Application Services]",
-            "    end",
-            "",
-            "    subgraph z3[Data Zone]",
-            "        datastore[(Primary Database)]",
-            "        audit[(Audit/Telemetry Store)]",
-            "    end",
-            "",
-            "    subgraph z4[External Services Zone]",
-            "        idp[(Identity Provider)]",
-            "        external[(3rd Party APIs)]",
-            "    end",
-            "",
-            "    attacker -->|HTTPS / untrusted input| gateway",
-            "    user -->|HTTPS / auth token| gateway",
-            "    gateway -->|internal authn/authz context| appsvc",
-            "    appsvc -->|SQL/TCP + db credentials| datastore",
-            "    appsvc -->|security events| audit",
-            "    gateway -->|OIDC/JWT validation| idp",
-            "    appsvc -->|TLS API call| external",
-            "",
-            "    classDef highRisk fill:#ffcccc,stroke:#cc0000;",
-            "    classDef mediumRisk fill:#ffe6cc,stroke:#cc7a00;",
         ]
-
-        if top_risk in {"Critical", "High"}:
-            lines.append("    class gateway highRisk;")
-            lines.append("    class appsvc highRisk;")
-            lines.append("    class datastore highRisk;")
-            lines.append("    class attacker highRisk;")
-        else:
-            lines.append("    class gateway mediumRisk;")
-            lines.append("    class appsvc mediumRisk;")
-            lines.append("    class datastore mediumRisk;")
-
-        if not has_auth:
-            lines.append("    gateway -.->|Auth evidence limited; verify controls| idp")
-        if not has_db:
-            lines.append("    appsvc -.->|DB evidence limited; verify persistence layer| datastore")
-
+        lines.extend(self._generate_mermaid_dfd(evidence, relevant_threats))
         lines.extend(["```", ""])
+        return lines
+
+    def _generate_mermaid_dfd(
+        self,
+        evidence: Dict[str, Any],
+        relevant_threats: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Generate dynamic enterprise DFD using strict shapes and trust boundaries."""
+        file_paths: Set[str] = set()
+        for key in ["keyword_hits", "rule_hits", "sast_hits"]:
+            for hit in evidence.get(key, []) or []:
+                file_path = str(hit.get("file_path", "")).strip()
+                if file_path:
+                    file_paths.add(file_path)
+
+        file_paths.update(str(item) for item in (evidence.get("openapi_files", []) or []))
+        file_paths.update(str(item) for item in (evidence.get("config_files", []) or []))
+        file_paths.update(str(item) for item in (evidence.get("db_migration_files", []) or []))
+
+        has_python_ml_backend = any(path.endswith("backend/app.py") or path == "backend/app.py" for path in file_paths)
+        has_react_frontend = any(path.endswith("src/App.tsx") or path == "src/App.tsx" for path in file_paths)
+
+        db_types = {str(item.get("type", "")).lower() for item in (evidence.get("db_hints", []) or [])}
+        has_supabase_postgres = (
+            any(db in {"postgres", "postgresql", "supabase"} for db in db_types)
+            or any("supabase" in path.lower() for path in file_paths)
+        )
+
+        lines: List[str] = ["flowchart TD"]
+
+        lines.extend([
+            "    subgraph TB1 [TB1: Untrusted Internet Zone]",
+            "        threatActor((Threat Actor))",
+            "        internetUser((Internet User))",
+        ])
+        if has_react_frontend:
+            lines.append("        reactClient((React Frontend / Mobile Client))")
+        lines.append("    end")
+
+        lines.extend([
+            "",
+            "    subgraph TB2 [TB2: Application Internal Services]",
+            "        apiGateway[API Gateway]",
+        ])
+        if has_python_ml_backend:
+            lines.append("        pyMlBackend[Python ML Backend]")
+            lines.append("        backendService[Backend Orchestration Service]")
+        else:
+            lines.append("        backendService[Application Backend Service]")
+        lines.append("    end")
+
+        lines.extend([
+            "",
+            "    subgraph TB3 [TB3: Secure Data Zone]",
+        ])
+        if has_supabase_postgres:
+            lines.append("        primaryStore[(Supabase PostgreSQL)]")
+        else:
+            lines.append("        primaryStore[(Application Data Store)]")
+        lines.append("        auditStore[(Security Audit Store)]")
+        lines.append("    end")
+
+        flow_lines: List[str] = []
+        if has_react_frontend:
+            flow_lines.append("    internetUser -->|TLS Session / UI Interaction| reactClient")
+            flow_lines.append("    reactClient -->|HTTPS / eKYC Payload| apiGateway")
+        else:
+            flow_lines.append("    internetUser -->|HTTPS / eKYC Payload| apiGateway")
+
+        flow_lines.append("    threatActor -->|HTTPS / Recon and Attack Traffic| apiGateway")
+
+        if has_python_ml_backend:
+            flow_lines.append("    apiGateway -->|HTTPS / eKYC Biometric Request| pyMlBackend")
+            flow_lines.append("    pyMlBackend -->|Inference Result / Risk Score| backendService")
+        else:
+            flow_lines.append("    apiGateway -->|HTTPS / API Request Routing| backendService")
+
+        flow_lines.append("    backendService -->|SQL over TLS / KYC Data Persistence| primaryStore")
+        flow_lines.append("    backendService -->|Signed Security Event Stream| auditStore")
+
+        lines.extend(["", *flow_lines, ""])
+        lines.append("    classDef highRisk fill:#ffcccc,stroke:#cc0000;")
+
+        high_risk_threat_count = 0
+        for item in relevant_threats[:6]:
+            risk_level = self._classify_risk_level(item.get("threat", {}), item.get("evidence_count", 0))
+            if risk_level in {"Critical", "High"}:
+                high_risk_threat_count += 1
+
+        if high_risk_threat_count > 0:
+            lines.append("    class apiGateway highRisk;")
+            lines.append("    class backendService highRisk;")
+            lines.append("    class primaryStore highRisk;")
+
+        style_count = min(len(flow_lines), max(2, high_risk_threat_count + 1)) if flow_lines else 0
+        for idx in range(style_count):
+            lines.append(f"    linkStyle {idx} stroke:#cc0000,stroke-width:2px;")
+
         return lines
 
     def _generate_data_flow_matrix(self, evidence: Dict[str, Any]) -> List[str]:
@@ -405,8 +445,8 @@ class ThreatModelReporter:
                 f"- Business Impact: {business_impact}",
                 "",
                 "**Evidence Table:**",
-                "| File Path | Line Number | Trigger | Severity |",
-                "|-----------|-------------|---------|----------|",
+                "| File Path | Exact Line | Trigger (Rule/Keyword) | Severity |",
+                "|-----------|------------|------------------------|----------|",
             ])
 
             if evidence_rows:
@@ -423,40 +463,44 @@ class ThreatModelReporter:
         return lines
 
     def _build_threat_evidence_rows(self, threat: Dict[str, Any], evidence: Dict[str, Any]) -> List[str]:
-        """Build evidence rows using exact SAST/rule/keyword logic."""
-        trigger_rules = set(threat.get("trigger_rules", []) or [])
-        keyword_triggers = [str(item).lower() for item in (threat.get("keywords", []) or [])]
+        """Build evidence rows prioritizing SAST then rules then keyword fallbacks."""
+        trigger_rules = set(str(item) for item in (threat.get("trigger_rules", []) or []))
 
-        table_rows: List[str] = []
+        table_rows = []
 
-        # 1. Process SAST hits (which have line numbers)
-        for hit in evidence.get("sast_hits", []) or []:
+        # 1. Prioritize SAST Hits (Highest Fidelity, Has Exact Line Numbers)
+        for hit in evidence.get("sast_hits", []):
             rule_id = str(hit.get("rule_id", ""))
             if rule_id in trigger_rules:
-                line_num = hit.get("line", "N/A")
-                severity = hit.get("severity", "HIGH")
+                line_num = str(hit.get("line", "N/A"))
+                severity = str(hit.get("severity", "HIGH")).upper()
                 filepath = hit.get("file_path", "Unknown")
-                table_rows.append(f"| {filepath} | {line_num} | {rule_id} | {severity} |")
+                table_rows.append(f"| `{filepath}` | **Line {line_num}** | Rule: `{rule_id}` | {severity} |")
 
-        # 2. Process Rule hits (might have line numbers)
-        for hit in evidence.get("rule_hits", []) or []:
+        # 2. Add Rule Hits (Medium Fidelity, May or may not have line numbers)
+        for hit in evidence.get("rule_hits", []):
             rule_id = str(hit.get("rule_id", ""))
             if rule_id in trigger_rules:
-                line_num = hit.get("line", "N/A")
-                severity = hit.get("severity", "HIGH")
+                line_num = str(hit.get("line", "N/A"))
+                severity = str(hit.get("severity", "HIGH")).upper()
                 filepath = hit.get("file_path", "Unknown")
-                table_rows.append(f"| {filepath} | {line_num} | {rule_id} | {severity} |")
+                # Only add if we didn't already catch it via SAST
+                row_str = f"| `{filepath}` | Line {line_num} | Rule: `{rule_id}` | {severity} |"
+                if row_str not in table_rows:
+                    table_rows.append(row_str)
 
-        # 3. Process Keyword hits (no line numbers, just print '-')
-        for hit in evidence.get("keyword_hits", []) or []:
+        # 3. Add Keyword Hits as fallback (Low Fidelity, No line numbers)
+        for hit in evidence.get("keyword_hits", []):
             kw = str(hit.get("keyword", "")).lower()
-            if kw in keyword_triggers:
+            if kw in [str(k).lower() for k in threat.get("keywords", [])]:
                 severity = str(hit.get("priority", "MEDIUM")).upper()
                 filepath = hit.get("file_path", "Unknown")
-                table_rows.append(f"| {filepath} | - | {kw} | {severity} |")
+                row_str = f"| `{filepath}` | - | Keyword: `{kw}` | {severity} |"
+                if row_str not in table_rows:
+                    table_rows.append(row_str)
 
-        # Deduplicate rows
-        table_rows = sorted(list(set(table_rows)))
+        # Cap at 30 rows to prevent massive tables, prioritizing SAST/Rules first
+        table_rows = table_rows[:30]
         return table_rows
 
     def _build_language_specific_mitigations(self, threat: Dict[str, Any]) -> List[str]:
