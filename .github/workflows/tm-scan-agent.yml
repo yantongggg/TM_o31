@@ -45,7 +45,6 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: |
           cd tm-scan-tool
-          # 修正了你之前的命令，去掉了重复的 --mode quick
           python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick
           
       - name: Locate SARIF artifact
