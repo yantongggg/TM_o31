@@ -42,6 +42,7 @@ class ThreatModelReporter:
             self._generate_header(repo_name),
             self._generate_system_context(evidence),
             self._generate_mermaid_dfd(relevant_threats, evidence),
+            self._generate_full_threat_model_diagram(relevant_threats, evidence),
             self._generate_data_flow_matrix(evidence),
             self._generate_5d_analysis(relevant_threats, evidence),
             self._generate_pasta_analysis(relevant_threats),
@@ -231,6 +232,119 @@ class ThreatModelReporter:
 
         return "\n".join(lines)
 
+    def _generate_full_threat_model_diagram(self, relevant_threats: List[Dict[str, Any]], evidence: Dict) -> str:
+        file_paths = [
+            str(hit.get("file_path", ""))
+            for hit in (evidence.get("keyword_hits", []) or []) + (evidence.get("sast_hits", []) or [])
+        ]
+
+        has_frontend = any(path.endswith((".tsx", ".jsx", ".ts", ".js")) for path in file_paths)
+        has_backend = any(path.endswith(".py") for path in file_paths)
+        has_db = bool(evidence.get("db_hints", [])) or any("supabase" in path.lower() for path in file_paths)
+
+        threat_nodes = []
+        for index, item in enumerate(relevant_threats[:6], start=1):
+            threat = item.get("threat", {})
+            threat_id = str(threat.get("id", f"TM-{index}"))
+            name = str(threat.get("name", "Unknown Threat")).replace('"', "").replace("(", "[").replace(")", "]")
+            threat_nodes.append((f"t{index}", f"{threat_id}: {name}"))
+
+        if not threat_nodes:
+            threat_nodes = [("t1", "TM-UNKNOWN: Placeholder Threat")]
+
+        lines = [
+            "## 2.5 FULL THREAT-MODEL DIAGRAM",
+            "",
+            "```mermaid",
+            "flowchart LR",
+            "    subgraph EXT [External / Untrusted Zone]",
+            "        ta((Threat Actor))",
+            "        eu((End User))",
+            "    end",
+            "",
+            "    subgraph APP [Application Trust Zone]",
+            "        api[API Gateway / Auth Controller]",
+        ]
+
+        if has_frontend:
+            lines.append("        web[Web / Mobile Frontend]")
+        if has_backend:
+            lines.append("        svc[Backend Services]")
+
+        lines.extend([
+            "    end",
+            "",
+            "    subgraph DATA [Data / Secrets Zone]",
+        ])
+
+        if has_db:
+            lines.append("        db[(Primary DB / Supabase)]")
+        lines.append("        sec[(Secrets / Config)]")
+        lines.extend([
+            "    end",
+            "",
+            "    %% Primary Flows",
+            "    eu -->|HTTPS| api",
+            "    ta -->|Recon / Probe| api",
+        ])
+
+        if has_frontend:
+            lines.append("    eu -->|UI Actions| web")
+            lines.append("    web -->|API Requests| api")
+        if has_backend:
+            lines.append("    api -->|Validated Context| svc")
+            if has_db:
+                lines.append("    svc -->|SQL / ORM| db")
+            lines.append("    svc -->|Secret Access| sec")
+        else:
+            if has_db:
+                lines.append("    api -->|SQL / ORM| db")
+            lines.append("    api -->|Secret Access| sec")
+
+        lines.extend([
+            "",
+            "    subgraph THR [Top Threat Scenarios]",
+        ])
+
+        for node_id, label in threat_nodes:
+            lines.append(f"        {node_id}[\"{label}\"]")
+
+        lines.extend([
+            "    end",
+            "",
+            "    %% Threat Mapping",
+        ])
+
+        for node_id, _label in threat_nodes:
+            if has_backend:
+                lines.append(f"    ta -.-> {node_id}")
+                lines.append(f"    {node_id} -.-> svc")
+            else:
+                lines.append(f"    ta -.-> {node_id}")
+                lines.append(f"    {node_id} -.-> api")
+
+        lines.extend([
+            "",
+            "    classDef highRisk fill:#ffcccc,stroke:#cc0000;",
+            "    class ta highRisk;",
+            "    class api highRisk;",
+            "    class sec highRisk;",
+        ])
+
+        if has_backend:
+            lines.append("    class svc highRisk;")
+        if has_db:
+            lines.append("    class db highRisk;")
+        for node_id, _label in threat_nodes:
+            lines.append(f"    class {node_id} highRisk;")
+
+        lines.extend([
+            "```",
+            "",
+        ])
+
+        return "\n".join(lines)
+
     def _resolve_trigger_rules_for_threat(self, threat: Dict[str, Any], evidence: Dict) -> set:
         resolved = {str(rule) for rule in (threat.get("trigger_rules", []) or []) if rule}
 
@@ -253,16 +367,7 @@ class ThreatModelReporter:
         if threat_cwe and hit_cwe and threat_cwe == hit_cwe:
             return True
 
-        threat_text = f"{threat.get('name', '')} {threat.get('description', '')}".lower()
-        hit_cat = str(hit.get("category", "")).lower()
-        hit_subcat = str(hit.get("sub_category", "")).lower()
-        if hit_cat and hit_cat in threat_text:
-            return True
-        if hit_subcat and hit_subcat in threat_text:
-            return True
-
-        rule_text = f"{rule_id} {hit_cat} {hit_subcat}".lower()
-        return any(keyword and keyword in rule_text for keyword in keywords[:12])
+        return False
 
     def _generate_5d_analysis(self, relevant_threats: List[Dict[str, Any]], evidence: Dict) -> str:
         lines = ["## 4. 5-D THREAT ANALYSIS (STRIDE + PASTA + LINDDUN + CWE + DREAD)", ""]
@@ -288,7 +393,7 @@ class ThreatModelReporter:
                 "**Evidence Context (Actionable Trace):**",
             ])
 
-            table_rows = []
+            evidence_rows = []
             seen_hits = set()
             trigger_rules = self._resolve_trigger_rules_for_threat(threat, evidence)
             keywords = [str(keyword).lower() for keyword in (threat.get("keywords", []) or [])]
@@ -305,15 +410,25 @@ class ThreatModelReporter:
                 base_name = os.path.basename(lower_path)
                 return base_name in exclude_files or "/evidence.json" in lower_path or "/evidence-summary.md" in lower_path
 
-            def _add_row(file_path: str, rule_or_keyword: str, row_str: str) -> bool:
+            def _add_row(file_path: str, rule_or_keyword: str, row_obj: Dict[str, str]) -> bool:
                 dedupe_key = (_normalize_path(file_path), str(rule_or_keyword or "").strip().lower())
                 if dedupe_key in seen_hits:
                     return False
                 seen_hits.add(dedupe_key)
-                table_rows.append(row_str)
+                evidence_rows.append(row_obj)
                 return True
 
             has_high_fidelity_evidence = False
+
+            exact_line_index = {}
+            for hit in evidence.get("sast_hits", []) or []:
+                file_path = _normalize_path(hit.get("file_path", "unknown"))
+                if _should_exclude_path(file_path):
+                    continue
+                rule_id = str(hit.get("rule_id", "UNKNOWN_RULE"))
+                line_val = str(hit.get("line", "")).strip()
+                if line_val and line_val not in {"-", "N/A"}:
+                    exact_line_index[(file_path, rule_id)] = line_val
 
             # 1) Highest fidelity: SAST hits with exact lines
             for hit in evidence.get("sast_hits", []) or []:
@@ -324,8 +439,15 @@ class ThreatModelReporter:
                     rule_id = str(hit.get("rule_id", "UNKNOWN_RULE"))
                     line_val = str(hit.get("line", "N/A"))
                     severity = str(hit.get("severity", "HIGH")).upper()
-                    row_str = f"| `{file_path}` | **Line {line_val}** | Rule: `{rule_id}` | **{severity}** |"
-                    if _add_row(file_path, f"rule:{rule_id}", row_str):
+                    row_obj = {
+                        "file_path": file_path,
+                        "line": line_val,
+                        "trigger": f"Rule: `{rule_id}`",
+                        "severity": severity,
+                        "source": "SAST",
+                        "confidence": "High",
+                    }
+                    if _add_row(file_path, f"rule:{rule_id}", row_obj):
                         has_high_fidelity_evidence = True
 
             # 2) Medium fidelity: rule hits
@@ -335,10 +457,21 @@ class ThreatModelReporter:
                     if _should_exclude_path(file_path):
                         continue
                     rule_id = str(hit.get("rule_id", "UNKNOWN_RULE"))
-                    line_val = str(hit.get("line", "N/A")) if hit.get("line") else "-"
+                    line_val = str(hit.get("line", "")).strip() if hit.get("line") else ""
+                    if not line_val or line_val in {"-", "N/A"}:
+                        line_val = exact_line_index.get((file_path, rule_id), "-")
                     severity = str(hit.get("severity", "HIGH")).upper()
-                    row_str = f"| `{file_path}` | Line {line_val} | Rule: `{rule_id}` | {severity} |"
-                    if _add_row(file_path, f"rule:{rule_id}", row_str):
+                    source = "Rule+SAST" if line_val not in {"-", "N/A", ""} else "Rule"
+                    confidence = "High" if source == "Rule+SAST" else "Medium"
+                    row_obj = {
+                        "file_path": file_path,
+                        "line": line_val,
+                        "trigger": f"Rule: `{rule_id}`",
+                        "severity": severity,
+                        "source": source,
+                        "confidence": confidence,
+                    }
+                    if _add_row(file_path, f"rule:{rule_id}", row_obj):
                         has_high_fidelity_evidence = True
 
             # 3) Low fidelity fallback: keyword hits (only when no SAST/Rule evidence exists)
@@ -350,18 +483,36 @@ class ThreatModelReporter:
                         if _should_exclude_path(file_path):
                             continue
                         severity = str(hit.get("priority", "MEDIUM")).upper()
-                        row_str = f"| `{file_path}` | - | Keyword: `{keyword}` | {severity} |"
-                        _add_row(file_path, f"keyword:{keyword}", row_str)
+                        row_obj = {
+                            "file_path": file_path,
+                            "line": "-",
+                            "trigger": f"Keyword: `{keyword}`",
+                            "severity": severity,
+                            "source": "Keyword",
+                            "confidence": "Low",
+                        }
+                        _add_row(file_path, f"keyword:{keyword}", row_obj)
+
+            # Professional rendering rule:
+            # if any exact-line evidence exists, suppress all non-line rows for that threat.
+            exact_rows = [
+                row for row in evidence_rows
+                if row.get("line") not in {"-", "N/A", "", None}
+            ]
+            display_rows = exact_rows if exact_rows else evidence_rows
 
             # Preserve fidelity-first insertion order, cap size
-            table_rows = table_rows[:30]
+            display_rows = display_rows[:30]
 
-            if table_rows:
+            if display_rows:
                 lines.extend([
-                    "| File Path | Exact Line | Trigger (Rule/Keyword) | Severity |",
-                    "|-----------|------------|------------------------|----------|",
+                    "| File Path | Exact Line | Trigger (Rule/Keyword) | Severity | Source | Confidence |",
+                    "|-----------|------------|------------------------|----------|--------|------------|",
                 ])
-                lines.extend(table_rows)
+                for row in display_rows:
+                    lines.append(
+                        f"| `{row.get('file_path', 'unknown')}` | {row.get('line', '-')} | {row.get('trigger', '-')} | {row.get('severity', 'MEDIUM')} | {row.get('source', '-')} | {row.get('confidence', '-')} |"
+                    )
             else:
                 lines.append("No specific code-level evidence captured.")
 
