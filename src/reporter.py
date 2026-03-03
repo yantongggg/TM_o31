@@ -4,8 +4,10 @@ Threat model report generation module.
 
 import os
 import json
+import re
 import yaml
 from typing import Dict, List, Any
+from pathlib import Path
 from datetime import datetime
 from statistics import mean
 
@@ -19,6 +21,167 @@ class ThreatModelReporter:
     def __init__(self, config: Config):
         self.config = config
         self.kb_threats = self._load_threats()
+        self.sast_rule_index = self._load_sast_rule_index()
+        self._line_resolution_cache = {}
+        self._active_repo_name = None
+
+    def _load_sast_rule_index(self) -> Dict[str, Dict[str, Any]]:
+        index: Dict[str, Dict[str, Any]] = {}
+        try:
+            with open(self.config.kb_rules_path, "r") as file:
+                data = yaml.safe_load(file) or {}
+            for rule in data.get("rules", []) or []:
+                if not isinstance(rule, dict):
+                    continue
+                rule_id = str(rule.get("id", "")).strip()
+                if not rule_id:
+                    continue
+
+                compiled_patterns = []
+                for item in (rule.get("patterns", []) or []):
+                    regex = item.get("regex") if isinstance(item, dict) else None
+                    if not regex:
+                        continue
+                    try:
+                        compiled_patterns.append(re.compile(regex))
+                    except re.error:
+                        continue
+
+                compiled_not_patterns = []
+                for item in (rule.get("not_patterns", []) or []):
+                    regex = item.get("regex") if isinstance(item, dict) else None
+                    if not regex:
+                        continue
+                    try:
+                        compiled_not_patterns.append(re.compile(regex))
+                    except re.error:
+                        continue
+
+                index[rule_id] = {
+                    "condition": str(rule.get("condition", "OR")).upper(),
+                    "patterns": compiled_patterns,
+                    "not_patterns": compiled_not_patterns,
+                }
+        except Exception:
+            return {}
+
+        return index
+
+    def _candidate_repo_roots(self) -> List[Path]:
+        roots: List[Path] = []
+
+        local_dir = getattr(self.config, "local_dir", None)
+        if local_dir:
+            roots.append(Path(local_dir))
+
+        workspace_dir = getattr(self.config, "workspace_dir", None)
+        if workspace_dir and self._active_repo_name:
+            roots.append(Path(workspace_dir) / str(self._active_repo_name))
+
+        roots.append(Path.cwd())
+
+        seen = set()
+        unique_roots: List[Path] = []
+        for root in roots:
+            try:
+                resolved = root.resolve()
+            except Exception:
+                resolved = root
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_roots.append(resolved)
+
+        return unique_roots
+
+    def _resolve_line_with_rule_regex(self, file_path: str, rule_id: str) -> str:
+        cache_key = ("rule", file_path, rule_id)
+        if cache_key in self._line_resolution_cache:
+            return self._line_resolution_cache[cache_key]
+
+        rule = self.sast_rule_index.get(rule_id)
+        if not rule:
+            self._line_resolution_cache[cache_key] = "-"
+            return "-"
+
+        condition = rule.get("condition", "OR")
+        patterns = rule.get("patterns", [])
+        not_patterns = rule.get("not_patterns", [])
+
+        if not patterns:
+            self._line_resolution_cache[cache_key] = "-"
+            return "-"
+
+        for root in self._candidate_repo_roots():
+            candidate = (root / file_path).resolve()
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            try:
+                with open(candidate, "r", errors="ignore") as file:
+                    lines = list(file)
+
+                # If scanner rule would be globally excluded by NOT patterns, skip resolution.
+                full_content = "".join(lines)
+                if any(p.search(full_content) for p in not_patterns):
+                    continue
+
+                if condition == "AND":
+                    # Patterns may be distributed across different lines.
+                    # Select earliest line among all required pattern matches.
+                    pattern_line_hits = []
+                    for pattern in patterns:
+                        line_hit = None
+                        for idx, line in enumerate(lines, start=1):
+                            if pattern.search(line):
+                                line_hit = idx
+                                break
+                        if line_hit is None:
+                            pattern_line_hits = []
+                            break
+                        pattern_line_hits.append(line_hit)
+
+                    if pattern_line_hits:
+                        resolved = str(min(pattern_line_hits))
+                        self._line_resolution_cache[cache_key] = resolved
+                        return resolved
+                else:
+                    for idx, line in enumerate(lines, start=1):
+                        if any(pattern.search(line) for pattern in patterns):
+                            resolved = str(idx)
+                            self._line_resolution_cache[cache_key] = resolved
+                            return resolved
+            except Exception:
+                continue
+
+        self._line_resolution_cache[cache_key] = "-"
+        return "-"
+
+    def _resolve_line_with_keyword(self, file_path: str, keyword: str) -> str:
+        cache_key = ("keyword", file_path, keyword)
+        if cache_key in self._line_resolution_cache:
+            return self._line_resolution_cache[cache_key]
+
+        keyword_lower = str(keyword or "").lower().strip()
+        if not keyword_lower:
+            self._line_resolution_cache[cache_key] = "-"
+            return "-"
+
+        for root in self._candidate_repo_roots():
+            candidate = (root / file_path).resolve()
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            try:
+                with open(candidate, "r", errors="ignore") as file:
+                    for idx, line in enumerate(file, start=1):
+                        if keyword_lower in line.lower():
+                            self._line_resolution_cache[cache_key] = str(idx)
+                            return str(idx)
+            except Exception:
+                continue
+
+        self._line_resolution_cache[cache_key] = "-"
+        return "-"
 
     def _load_threats(self) -> Dict:
         try:
@@ -37,6 +200,7 @@ class ThreatModelReporter:
         return {"threats": normalized_threats}
 
     def generate_report(self, repo_name: str, evidence: Dict, gitleaks_summary: Dict, sbom_summary: Dict) -> str:
+        self._active_repo_name = repo_name
         relevant_threats = self._match_threats(evidence)
         lines = [
             self._generate_header(repo_name),
@@ -460,6 +624,8 @@ class ThreatModelReporter:
                     line_val = str(hit.get("line", "")).strip() if hit.get("line") else ""
                     if not line_val or line_val in {"-", "N/A"}:
                         line_val = exact_line_index.get((file_path, rule_id), "-")
+                    if line_val in {"-", "N/A", ""}:
+                        line_val = self._resolve_line_with_rule_regex(file_path, rule_id)
                     severity = str(hit.get("severity", "HIGH")).upper()
                     source = "Rule+SAST" if line_val not in {"-", "N/A", ""} else "Rule"
                     confidence = "High" if source == "Rule+SAST" else "Medium"
@@ -483,13 +649,16 @@ class ThreatModelReporter:
                         if _should_exclude_path(file_path):
                             continue
                         severity = str(hit.get("priority", "MEDIUM")).upper()
+                        line_val = self._resolve_line_with_keyword(file_path, keyword)
+                        source = "Keyword+Line" if line_val not in {"-", "N/A", ""} else "Keyword"
+                        confidence = "Medium" if source == "Keyword+Line" else "Low"
                         row_obj = {
                             "file_path": file_path,
-                            "line": "-",
+                            "line": line_val,
                             "trigger": f"Keyword: `{keyword}`",
                             "severity": severity,
-                            "source": "Keyword",
-                            "confidence": "Low",
+                            "source": source,
+                            "confidence": confidence,
                         }
                         _add_row(file_path, f"keyword:{keyword}", row_obj)
 
