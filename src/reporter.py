@@ -289,44 +289,72 @@ class ThreatModelReporter:
             ])
 
             table_rows = []
+            seen_hits = set()
             trigger_rules = self._resolve_trigger_rules_for_threat(threat, evidence)
             keywords = [str(keyword).lower() for keyword in (threat.get("keywords", []) or [])]
+            exclude_files = {"evidence.json", "evidence-summary.md"}
+
+            def _normalize_path(file_path: str) -> str:
+                normalized = str(file_path or "unknown").strip().replace("\\", "/")
+                if normalized.startswith("./"):
+                    normalized = normalized[2:]
+                return normalized
+
+            def _should_exclude_path(file_path: str) -> bool:
+                lower_path = str(file_path or "").lower().replace("\\", "/")
+                base_name = os.path.basename(lower_path)
+                return base_name in exclude_files or "/evidence.json" in lower_path or "/evidence-summary.md" in lower_path
+
+            def _add_row(file_path: str, rule_or_keyword: str, row_str: str) -> bool:
+                dedupe_key = (_normalize_path(file_path), str(rule_or_keyword or "").strip().lower())
+                if dedupe_key in seen_hits:
+                    return False
+                seen_hits.add(dedupe_key)
+                table_rows.append(row_str)
+                return True
+
+            has_high_fidelity_evidence = False
 
             # 1) Highest fidelity: SAST hits with exact lines
             for hit in evidence.get("sast_hits", []) or []:
                 if self._rule_hit_matches_threat(hit, threat, trigger_rules, keywords):
+                    file_path = _normalize_path(hit.get("file_path", "unknown"))
+                    if _should_exclude_path(file_path):
+                        continue
+                    rule_id = str(hit.get("rule_id", "UNKNOWN_RULE"))
                     line_val = str(hit.get("line", "N/A"))
                     severity = str(hit.get("severity", "HIGH")).upper()
-                    table_rows.append(
-                        f"| `{hit.get('file_path', 'unknown')}` | **Line {line_val}** | Rule: `{hit.get('rule_id')}` | **{severity}** |"
-                    )
+                    row_str = f"| `{file_path}` | **Line {line_val}** | Rule: `{rule_id}` | **{severity}** |"
+                    if _add_row(file_path, f"rule:{rule_id}", row_str):
+                        has_high_fidelity_evidence = True
 
             # 2) Medium fidelity: rule hits
             for hit in evidence.get("rule_hits", []) or []:
                 if self._rule_hit_matches_threat(hit, threat, trigger_rules, keywords):
+                    file_path = _normalize_path(hit.get("file_path", "unknown"))
+                    if _should_exclude_path(file_path):
+                        continue
+                    rule_id = str(hit.get("rule_id", "UNKNOWN_RULE"))
                     line_val = str(hit.get("line", "N/A")) if hit.get("line") else "-"
                     severity = str(hit.get("severity", "HIGH")).upper()
-                    row_str = f"| `{hit.get('file_path', 'unknown')}` | Line {line_val} | Rule: `{hit.get('rule_id')}` | {severity} |"
-                    if row_str not in table_rows:
-                        table_rows.append(row_str)
+                    row_str = f"| `{file_path}` | Line {line_val} | Rule: `{rule_id}` | {severity} |"
+                    if _add_row(file_path, f"rule:{rule_id}", row_str):
+                        has_high_fidelity_evidence = True
 
-            # 3) Low fidelity fallback: keyword hits
-            for hit in evidence.get("keyword_hits", []) or []:
-                keyword = str(hit.get("keyword", "")).lower()
-                if keyword in keywords:
-                    severity = str(hit.get("priority", "MEDIUM")).upper()
-                    row_str = f"| `{hit.get('file_path', 'unknown')}` | - | Keyword: `{keyword}` | {severity} |"
-                    if row_str not in table_rows:
-                        table_rows.append(row_str)
+            # 3) Low fidelity fallback: keyword hits (only when no SAST/Rule evidence exists)
+            if not has_high_fidelity_evidence:
+                for hit in evidence.get("keyword_hits", []) or []:
+                    keyword = str(hit.get("keyword", "")).lower()
+                    if keyword in keywords:
+                        file_path = _normalize_path(hit.get("file_path", "unknown"))
+                        if _should_exclude_path(file_path):
+                            continue
+                        severity = str(hit.get("priority", "MEDIUM")).upper()
+                        row_str = f"| `{file_path}` | - | Keyword: `{keyword}` | {severity} |"
+                        _add_row(file_path, f"keyword:{keyword}", row_str)
 
-            # Preserve priority order (SAST -> Rule -> Keyword), cap size
-            unique_rows = []
-            seen_rows = set()
-            for row in table_rows:
-                if row not in seen_rows:
-                    unique_rows.append(row)
-                    seen_rows.add(row)
-            table_rows = unique_rows[:30]
+            # Preserve fidelity-first insertion order, cap size
+            table_rows = table_rows[:30]
 
             if table_rows:
                 lines.extend([
