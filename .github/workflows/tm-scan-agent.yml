@@ -5,6 +5,8 @@ on:
     branches: [ "**" ]
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - 'ThreatModelling_result/**' 
   workflow_dispatch: 
 
 permissions:
@@ -43,6 +45,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTIONS: "true"
+          # 传递给 Python 脚本，让它可以在 Markdown 里面写上你的名字
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           cd tm-scan-tool
           python tm-scan --local-dir "$GITHUB_WORKSPACE/target-repo" --mode quick
@@ -100,23 +105,25 @@ jobs:
             cat "${{ env.MD_FILE }}" >> $GITHUB_STEP_SUMMARY
           fi
 
-      
       - name: Save Report to Repository
         if: (success() || failure()) && env.MD_FILE != ''
         run: |
           TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          
           REPORT_DIR="$GITHUB_WORKSPACE/target-repo/ThreatModelling_result"
-          
           mkdir -p "$REPORT_DIR"
+        
+          NEW_FILENAME="threatmodel-report_${REPO_OWNER}_${REPO_NAME}_${TIMESTAMP}.md"
           
-          cp "${{ env.MD_FILE }}" "$REPORT_DIR/threatmodel-report_${TIMESTAMP}.md"
-          
-          echo "Report saved to $REPORT_DIR/threatmodel-report_${TIMESTAMP}.md"
+          cp "${{ env.MD_FILE }}" "$REPORT_DIR/$NEW_FILENAME"
+          echo "Report saved to $REPORT_DIR/$NEW_FILENAME"
 
       - name: Commit and Push Report
         if: (success() || failure()) && env.MD_FILE != ''
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           repository: ./target-repo
-          commit_message: "docs(security): auto-save threat modeling report"
+          commit_message: "docs(security): auto-save threat modeling report for ${{ github.repository }}"
           file_pattern: "ThreatModelling_result/*.md"
