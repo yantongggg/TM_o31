@@ -1,6 +1,7 @@
 """Threat model report generation module."""
 
 import json
+import os
 from datetime import datetime
 from statistics import mean
 from typing import Any, Dict, List, Set, Tuple
@@ -108,10 +109,30 @@ class ThreatModelReporter:
         return "\n".join(lines)
 
     def _generate_header(self, repo_name: str) -> List[str]:
+        repo_owner = os.environ.get("REPO_OWNER", "").strip() or self.config.org
+        repo_name_env = os.environ.get("REPO_NAME", "").strip()
+
+        if repo_name_env:
+            if "/" in repo_name_env:
+                full_repository_name = repo_name_env
+                inferred_repo_name = repo_name_env.split("/", 1)[1]
+                display_repo_name = inferred_repo_name or repo_name
+            else:
+                full_repository_name = f"{repo_owner}/{repo_name_env}"
+                display_repo_name = repo_name_env
+        else:
+            display_repo_name = repo_name
+            full_repository_name = f"{repo_owner}/{repo_name}"
+
         return [
             "# Automated Threat Modeling and Security Scan Report",
             "",
-            f"**Repository:** {repo_name}",
+            "## Repository Identity",
+            "",
+            f"**GitHub Owner / Username:** {repo_owner}",
+            f"**Repository:** {display_repo_name}",
+            f"**Full Repository Name:** {full_repository_name}",
+            "",
             f"**Organization:** {self.config.org}",
             f"**Report Date:** {self.config.run_timestamp}",
             f"**Report Version:** tm-scan v{__version__}",
