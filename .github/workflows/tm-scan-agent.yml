@@ -5,22 +5,10 @@ on:
     branches: [ "**" ]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-<<<<<<< HEAD
-    branches: [ "**" ]
-    paths-ignore:
-      - 'ThreatModelling_result/**'
-      - '**/ThreatModelling_result/**'
-  workflow_dispatch:
-
-concurrency:
-  group: tm-scan-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-=======
     branches: [ "main" ]
     paths-ignore:
       - 'ThreatModelling_result/**' 
   workflow_dispatch: 
->>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
 
 permissions:
   contents: write 
@@ -102,19 +90,6 @@ jobs:
           MD_PATH=$(find "$HOME/tm-output" -name "threatmodel-report.md" -print -quit 2>/dev/null || true)
           if [ -n "$MD_PATH" ]; then
             echo "MD_FILE=$MD_PATH" >> "$GITHUB_ENV"
-<<<<<<< HEAD
-            echo "md_file=$MD_PATH" >> "$GITHUB_OUTPUT"
-          else
-            echo "md_file=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Comment PR with Threat Model Report
-        if: (success() || failure()) && github.event_name == 'pull_request' && steps.find-md.outputs.md_file != ''
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: threat-model-report
-          path: ${{ steps.find-md.outputs.md_file }}
-=======
           fi
 
       - name: Comment PR with Threat Model Report
@@ -123,20 +98,10 @@ jobs:
         with:
           header: threat-model-report
           path: ${{ env.MD_FILE }}
->>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
 
       - name: Publish Job Summary
         if: success() || failure()
         run: |
-<<<<<<< HEAD
-          if [ -n "${{ steps.find-md.outputs.md_file }}" ]; then
-            echo "## 🛡️ Threat Modeling Scan Results" >> $GITHUB_STEP_SUMMARY
-            cat "${{ steps.find-md.outputs.md_file }}" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Save Report to Repository
-        if: (success() || failure()) && steps.find-md.outputs.md_file != ''
-=======
           if [ -n "${{ env.MD_FILE }}" ]; then
             echo "## 🛡️ Threat Modeling Scan Results" >> $GITHUB_STEP_SUMMARY
             cat "${{ env.MD_FILE }}" >> $GITHUB_STEP_SUMMARY
@@ -144,7 +109,6 @@ jobs:
 
       - name: Save Report to Repository
         if: (success() || failure()) && env.MD_FILE != ''
->>>>>>> 8e1b88f4c56ff5c23084d4003a1b4984829d83b4
         run: |
           TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
           REPO_OWNER="${{ github.repository_owner }}"
