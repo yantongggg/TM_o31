@@ -8,6 +8,7 @@ import yaml
 from typing import Dict, List, Any
 from datetime import datetime
 from statistics import mean
+
 from .config import Config
 from . import __version__
 
@@ -21,19 +22,18 @@ class ThreatModelReporter:
 
     def _load_threats(self) -> Dict:
         try:
-            with open(self.config.kb_threats_path, "r") as f:
-                raw_data = yaml.safe_load(f) or {}
+            with open(self.config.kb_threats_path, "r") as file:
+                raw_data = yaml.safe_load(file) or {}
             return self._normalize_threats(raw_data)
-        except Exception as e:
-            print(f"Warning: Could not load threats KB: {e}")
+        except Exception as exc:
+            print(f"Warning: Could not load threats KB: {exc}")
             return {"threats": []}
 
     def _normalize_threats(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
         normalized_threats = []
         for threat in raw_data.get("threats", []) or []:
-            if not isinstance(threat, dict):
-                continue
-            normalized_threats.append(threat)
+            if isinstance(threat, dict):
+                normalized_threats.append(threat)
         return {"threats": normalized_threats}
 
     def generate_report(self, repo_name: str, evidence: Dict, gitleaks_summary: Dict, sbom_summary: Dict) -> str:
@@ -42,30 +42,46 @@ class ThreatModelReporter:
             self._generate_header(repo_name),
             self._generate_system_context(evidence),
             self._generate_mermaid_dfd(relevant_threats, evidence),
-            self._generate_data_flow_matrix(),
+            self._generate_data_flow_matrix(evidence),
             self._generate_5d_analysis(relevant_threats, evidence),
             self._generate_pasta_analysis(relevant_threats),
             self._generate_risk_summary(relevant_threats),
-            self._generate_footer()
+            self._generate_footer(gitleaks_summary, sbom_summary),
         ]
         return "\n".join(lines)
 
     def _match_threats(self, evidence: Dict) -> List[Dict[str, Any]]:
         relevant_threats = []
-        rule_hit_ids = {h.get("rule_id") for h in evidence.get("rule_hits", []) + evidence.get("sast_hits", [])}
-        evidence_keywords = {h.get("keyword", "").lower() for h in evidence.get("keyword_hits", [])}
+
+        rule_hits = evidence.get("rule_hits", []) or []
+        sast_hits = evidence.get("sast_hits", []) or []
+        keyword_hits = evidence.get("keyword_hits", []) or []
+
+        rule_hit_ids = {str(hit.get("rule_id", "")) for hit in rule_hits + sast_hits if hit.get("rule_id")}
+        evidence_keywords = {str(hit.get("keyword", "")).lower() for hit in keyword_hits if hit.get("keyword")}
+        evidence_cwes = {str(hit.get("cwe", "")).strip().upper() for hit in rule_hits + sast_hits if hit.get("cwe")}
 
         for threat in self.kb_threats.get("threats", []):
-            threat_keywords = {k.lower() for k in threat.get("keywords", [])}
-            trigger_rules = set(threat.get("trigger_rules", []) or [])
-            keyword_hits = threat_keywords & evidence_keywords
-            rule_hits = trigger_rules & rule_hit_ids
-            if keyword_hits or rule_hits:
+            threat_keywords = {str(word).lower() for word in (threat.get("keywords", []) or []) if word}
+            trigger_rules = {str(rule) for rule in (threat.get("trigger_rules", []) or []) if rule}
+            threat_cwe = str((threat.get("compliance", {}) or {}).get("cwe_id", "")).strip().upper()
+
+            keyword_match = bool(threat_keywords & evidence_keywords)
+            rule_match = bool(trigger_rules & rule_hit_ids)
+            cwe_match = bool(threat_cwe and threat_cwe in evidence_cwes)
+
+            if keyword_match or rule_match or cwe_match:
+                score = (
+                    len(threat_keywords & evidence_keywords)
+                    + len(trigger_rules & rule_hit_ids)
+                    + (1 if cwe_match else 0)
+                )
                 relevant_threats.append({
                     "threat": threat,
-                    "evidence_count": len(keyword_hits) + len(rule_hits)
+                    "evidence_count": score,
                 })
-        relevant_threats.sort(key=lambda t: t["evidence_count"], reverse=True)
+
+        relevant_threats.sort(key=lambda item: item.get("evidence_count", 0), reverse=True)
         return relevant_threats
 
     def _generate_header(self, repo_name: str) -> str:
@@ -80,12 +96,12 @@ class ThreatModelReporter:
             f"**Report Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"**Report Version:** tm-scan v{__version__}",
             "**Classification:** Highly Confidential",
-            ""
+            "",
         ])
 
     def _generate_system_context(self, evidence: Dict) -> str:
-        db_count = len(evidence.get("db_hints", []))
-        auth_count = len(evidence.get("auth_hints", []))
+        db_count = len(evidence.get("db_hints", []) or [])
+        auth_count = len(evidence.get("auth_hints", []) or [])
         return "\n".join([
             "## 1. SYSTEM CONTEXT",
             "",
@@ -102,17 +118,20 @@ class ThreatModelReporter:
             "- **Boundary 1:** Internet to Application Gateway is inherently untrusted.",
             "- **Boundary 2:** API Layer to Data Store relies on strict server-side authorization.",
             "- **Assumption:** Client-side biometric/eKYC controls can be bypassed; server-side validation is mandatory.",
-            ""
+            "",
         ])
 
     def _generate_mermaid_dfd(self, relevant_threats: List[Dict[str, Any]], evidence: Dict) -> str:
         """Generate a Mermaid flowchart DFD dynamically based on evidence."""
 
-        file_paths = [h.get("file_path", "") for h in evidence.get("keyword_hits", []) + evidence.get("sast_hits", [])]
-        db_types = [h.get("type", "") for h in evidence.get("db_hints", [])]
+        file_paths = [
+            hit.get("file_path", "")
+            for hit in (evidence.get("keyword_hits", []) or []) + (evidence.get("sast_hits", []) or [])
+        ]
+        db_types = [hit.get("type", "") for hit in evidence.get("db_hints", []) or []]
 
-        has_react = any(f.endswith((".tsx", ".jsx")) for f in file_paths)
-        has_python = any(f.endswith(".py") for f in file_paths)
+        has_react = any(str(path).endswith((".tsx", ".jsx")) for path in file_paths)
+        has_python = any(str(path).endswith(".py") for path in file_paths)
         has_supabase = "supabase" in str(file_paths).lower() or "postgres" in str(db_types).lower()
 
         lines = [
@@ -122,7 +141,7 @@ class ThreatModelReporter:
             "flowchart TD",
             "    subgraph TB1 [TB1: Untrusted Internet Zone]",
             "        attacker((Threat Actor))",
-            "        user((End User / Browser))"
+            "        user((End User / Browser))",
         ]
 
         if has_react:
@@ -132,7 +151,7 @@ class ThreatModelReporter:
             "    end",
             "",
             "    subgraph TB2 [TB2: Application Internal Services]",
-            "        gateway[API Gateway / Auth Controller]"
+            "        gateway[API Gateway / Auth Controller]",
         ])
 
         if has_python:
@@ -141,7 +160,7 @@ class ThreatModelReporter:
         lines.extend([
             "    end",
             "",
-            "    subgraph TB3 [TB3: Secure Data Zone]"
+            "    subgraph TB3 [TB3: Secure Data Zone]",
         ])
 
         if has_supabase:
@@ -154,7 +173,7 @@ class ThreatModelReporter:
             "",
             "    %% Data Flows",
             "    attacker -->|HTTPS / Untrusted Probes| gateway",
-            "    user -->|HTTPS / Auth Token| gateway"
+            "    user -->|HTTPS / Auth Token| gateway",
         ])
 
         if has_react:
@@ -180,23 +199,70 @@ class ThreatModelReporter:
 
         lines.extend([
             "```",
-            ""
+            "",
         ])
 
         return "\n".join(lines)
 
-    def _generate_data_flow_matrix(self) -> str:
-        return "\n".join([
+    def _generate_data_flow_matrix(self, evidence: Dict) -> str:
+        has_python = any(
+            str(hit.get("file_path", "")).endswith(".py")
+            for hit in (evidence.get("keyword_hits", []) or []) + (evidence.get("sast_hits", []) or [])
+        )
+
+        lines = [
             "## 3. DATA FLOW MATRIX",
             "",
             "| Source | Destination | Data Type | Protocol | Auth | Crosses Trust Boundary? |",
             "|--------|-------------|-----------|----------|------|-------------------------|",
             "| Frontend Client | API Gateway | User/eKYC Payload | HTTPS | JWT | **Yes** |",
-            "| API Gateway | ML Backend | Image/Biometric Data | Internal RPC | Service | No |",
-            "| Backend Service | Database | SQL Queries / PII | TCP/5432 | Password | **Yes** |",
+        ]
+
+        if has_python:
+            lines.append("| API Gateway | ML Backend | Image/Biometric Data | Internal RPC | Service | No |")
+            lines.append("| Backend Service | Database | SQL Queries / PII | TCP/5432 | Password | **Yes** |")
+        else:
+            lines.append("| API Gateway | Database | SQL Queries / PII | TCP/5432 | Password | **Yes** |")
+
+        lines.extend([
             "| App Config | Runtime | DB Secrets / API Keys | ENV | OS Level | No |",
-            ""
+            "",
         ])
+
+        return "\n".join(lines)
+
+    def _resolve_trigger_rules_for_threat(self, threat: Dict[str, Any], evidence: Dict) -> set:
+        resolved = {str(rule) for rule in (threat.get("trigger_rules", []) or []) if rule}
+
+        threat_cwe = str((threat.get("compliance", {}) or {}).get("cwe_id", "")).strip().upper()
+        if threat_cwe:
+            for hit in (evidence.get("sast_hits", []) or []) + (evidence.get("rule_hits", []) or []):
+                hit_cwe = str(hit.get("cwe", "")).strip().upper()
+                if hit_cwe == threat_cwe and hit.get("rule_id"):
+                    resolved.add(str(hit.get("rule_id")))
+
+        return resolved
+
+    def _rule_hit_matches_threat(self, hit: Dict[str, Any], threat: Dict[str, Any], trigger_rules: set, keywords: List[str]) -> bool:
+        rule_id = str(hit.get("rule_id", ""))
+        if rule_id and rule_id in trigger_rules:
+            return True
+
+        threat_cwe = str((threat.get("compliance", {}) or {}).get("cwe_id", "")).strip().upper()
+        hit_cwe = str(hit.get("cwe", "")).strip().upper()
+        if threat_cwe and hit_cwe and threat_cwe == hit_cwe:
+            return True
+
+        threat_text = f"{threat.get('name', '')} {threat.get('description', '')}".lower()
+        hit_cat = str(hit.get("category", "")).lower()
+        hit_subcat = str(hit.get("sub_category", "")).lower()
+        if hit_cat and hit_cat in threat_text:
+            return True
+        if hit_subcat and hit_subcat in threat_text:
+            return True
+
+        rule_text = f"{rule_id} {hit_cat} {hit_subcat}".lower()
+        return any(keyword and keyword in rule_text for keyword in keywords[:12])
 
     def _generate_5d_analysis(self, relevant_threats: List[Dict[str, Any]], evidence: Dict) -> str:
         lines = ["## 4. 5-D THREAT ANALYSIS (STRIDE + PASTA + LINDDUN + CWE + DREAD)", ""]
@@ -204,48 +270,63 @@ class ThreatModelReporter:
             return "\n".join(lines + ["No specific threats matched."])
 
         for item in relevant_threats:
-            t = item["threat"]
-            tid = t.get("id", "UNKNOWN")
-            dread = t.get("dread_score", {})
-            avg_dread = mean([int(v) for v in dread.values()]) if dread else 0.0
+            threat = item.get("threat", {})
+            threat_id = threat.get("id", "UNKNOWN")
+            dread = threat.get("dread_score", {}) or {}
+            avg_dread = self._average_dread(dread)
 
             lines.extend([
-                f"### [{tid}] {t.get('name')}",
-                f"**STRIDE / LINDDUN:** {t.get('stride_category', 'TBD')} / {t.get('linddun_category', 'TBD')} | **CWE:** {t.get('compliance', {}).get('cwe_id', 'TBD')}",
-                f"**DREAD Score:** Damage={dread.get('damage',0)}, Repro={dread.get('reproducibility',0)}, Exploit={dread.get('exploitability',0)}, Users={dread.get('affected_users',0)}, Discover={dread.get('discoverability',0)} (Avg: {avg_dread:.2f})",
+                f"### [{threat_id}] {threat.get('name')}",
+                f"**STRIDE / LINDDUN:** {threat.get('stride_category', 'TBD')} / {threat.get('linddun_category', 'TBD')} | **CWE:** {threat.get('compliance', {}).get('cwe_id', 'TBD')}",
+                f"**DREAD Score:** Damage={dread.get('damage', 0)}, Repro={dread.get('reproducibility', 0)}, Exploit={dread.get('exploitability', 0)}, Users={dread.get('affected_users', 0)}, Discover={dread.get('discoverability', 0)} (Avg: {avg_dread:.2f})",
                 "",
                 "**PASTA Attack Scenario:**",
-                f"- **Precondition:** {t.get('pasta_context', {}).get('attack_surface', 'Attacker reaches exposed interface.')}",
-                f"- **Exploitation:** {t.get('pasta_context', {}).get('attack_vector', 'Manipulates input or bypasses controls.')}",
-                f"- **Business Impact:** {t.get('pasta_context', {}).get('business_impact', 'Data breach or operational outage.')}",
+                f"- **Precondition:** {threat.get('pasta_context', {}).get('attack_surface', 'Attacker reaches exposed interface.')}",
+                f"- **Exploitation:** {threat.get('pasta_context', {}).get('attack_vector', 'Manipulates input or bypasses controls.')}",
+                f"- **Business Impact:** {threat.get('pasta_context', {}).get('business_impact', 'Data breach or operational outage.')}",
                 "",
                 "**Evidence Context (Actionable Trace):**",
             ])
 
             table_rows = []
-            trigger_rules = t.get("trigger_rules", [])
-            keywords = [k.lower() for k in t.get("keywords", [])]
+            trigger_rules = self._resolve_trigger_rules_for_threat(threat, evidence)
+            keywords = [str(keyword).lower() for keyword in (threat.get("keywords", []) or [])]
 
-            for h in evidence.get("sast_hits", []):
-                if h.get("rule_id") in trigger_rules:
-                    line_val = str(h.get("line", "N/A"))
-                    table_rows.append(f"| `{h.get('file_path', 'unknown')}` | **Line {line_val}** | Rule: `{h.get('rule_id')}` | **{h.get('severity', 'HIGH').upper()}** |")
+            # 1) Highest fidelity: SAST hits with exact lines
+            for hit in evidence.get("sast_hits", []) or []:
+                if self._rule_hit_matches_threat(hit, threat, trigger_rules, keywords):
+                    line_val = str(hit.get("line", "N/A"))
+                    severity = str(hit.get("severity", "HIGH")).upper()
+                    table_rows.append(
+                        f"| `{hit.get('file_path', 'unknown')}` | **Line {line_val}** | Rule: `{hit.get('rule_id')}` | **{severity}** |"
+                    )
 
-            for h in evidence.get("rule_hits", []):
-                if h.get("rule_id") in trigger_rules:
-                    line_val = str(h.get("line", "N/A")) if h.get("line") else "-"
-                    row_str = f"| `{h.get('file_path', 'unknown')}` | Line {line_val} | Rule: `{h.get('rule_id')}` | {h.get('severity', 'HIGH').upper()} |"
+            # 2) Medium fidelity: rule hits
+            for hit in evidence.get("rule_hits", []) or []:
+                if self._rule_hit_matches_threat(hit, threat, trigger_rules, keywords):
+                    line_val = str(hit.get("line", "N/A")) if hit.get("line") else "-"
+                    severity = str(hit.get("severity", "HIGH")).upper()
+                    row_str = f"| `{hit.get('file_path', 'unknown')}` | Line {line_val} | Rule: `{hit.get('rule_id')}` | {severity} |"
                     if row_str not in table_rows:
                         table_rows.append(row_str)
 
-            for h in evidence.get("keyword_hits", []):
-                kw = h.get("keyword", "").lower()
-                if kw in keywords:
-                    row_str = f"| `{h.get('file_path', 'unknown')}` | - | Keyword: `{kw}` | {h.get('priority', 'MEDIUM').upper()} |"
+            # 3) Low fidelity fallback: keyword hits
+            for hit in evidence.get("keyword_hits", []) or []:
+                keyword = str(hit.get("keyword", "")).lower()
+                if keyword in keywords:
+                    severity = str(hit.get("priority", "MEDIUM")).upper()
+                    row_str = f"| `{hit.get('file_path', 'unknown')}` | - | Keyword: `{keyword}` | {severity} |"
                     if row_str not in table_rows:
                         table_rows.append(row_str)
 
-            table_rows = sorted(list(set(table_rows)))[:30]
+            # Preserve priority order (SAST -> Rule -> Keyword), cap size
+            unique_rows = []
+            seen_rows = set()
+            for row in table_rows:
+                if row not in seen_rows:
+                    unique_rows.append(row)
+                    seen_rows.add(row)
+            table_rows = unique_rows[:30]
 
             if table_rows:
                 lines.extend([
@@ -257,21 +338,21 @@ class ThreatModelReporter:
                 lines.append("No specific code-level evidence captured.")
 
             lines.extend(["", "**Mitigation Requirements:**"])
-            for m in t.get("recommended_controls", [])[:3]:
-                lines.append(f"- {m}")
+            for control in (threat.get("recommended_controls", []) or [])[:3]:
+                lines.append(f"- {control}")
             lines.append("")
 
         return "\n".join(lines)
 
     def _generate_pasta_analysis(self, relevant_threats: List[Dict[str, Any]]) -> str:
-        t_names = []
+        threat_names = []
         for item in relevant_threats[:3]:
-            t = item["threat"]
-            clean_name = t.get('name', 'Unknown').replace('"', '').replace('(', '[').replace(')', ']')
-            t_names.append(f"{t.get('id', '')}: {clean_name}")
+            threat = item.get("threat", {})
+            clean_name = str(threat.get("name", "Unknown")).replace('"', '').replace('(', '[').replace(')', ']')
+            threat_names.append(f"{threat.get('id', '')}: {clean_name}")
 
-        while len(t_names) < 3:
-            t_names.append("Placeholder Threat")
+        while len(threat_names) < 3:
+            threat_names.append("Placeholder Threat")
 
         return "\n".join([
             "## 5. PASTA ANALYSIS (Attack Trees & Paths)",
@@ -279,9 +360,9 @@ class ThreatModelReporter:
             "```mermaid",
             "flowchart TD",
             "    a0[\"Precondition: Attacker maps attack surface\"]",
-            f"    a1[\"Initial Exploit: {t_names[0]}\"]",
-            f"    a2[\"Pivot/Escalate: {t_names[1]}\"]",
-            f"    a3[\"Objective Reached: {t_names[2]}\"]",
+            f"    a1[\"Initial Exploit: {threat_names[0]}\"]",
+            f"    a2[\"Pivot/Escalate: {threat_names[1]}\"]",
+            f"    a3[\"Objective Reached: {threat_names[2]}\"]",
             "    a4[\"Business Impact: High regulatory and financial loss\"]",
             "",
             "    a0 -.-> a1",
@@ -298,7 +379,7 @@ class ThreatModelReporter:
             "    linkStyle 2 stroke:#cc0000,stroke-width:2px,stroke-dasharray: 5 5;",
             "    linkStyle 3 stroke:#cc0000,stroke-width:2px,stroke-dasharray: 5 5;",
             "```",
-            ""
+            "",
         ])
 
     def _generate_risk_summary(self, relevant_threats: List[Dict[str, Any]]) -> str:
@@ -306,58 +387,84 @@ class ThreatModelReporter:
             "## 6. RISK SUMMARY & ACTION PLAN",
             "",
             "| Threat ID | Threat Name | Risk Level | DREAD Avg | Mitigation Priority |",
-            "|-----------|-------------|------------|-----------|---------------------|"
+            "|-----------|-------------|------------|-----------|---------------------|",
         ]
+
         for item in relevant_threats[:10]:
-            t = item["threat"]
-            dread = t.get("dread_score", {})
-            avg = mean([int(v) for v in dread.values()]) if dread else 0.0
+            threat = item.get("threat", {})
+            avg = self._average_dread(threat.get("dread_score", {}) or {})
             level = "Critical" if avg >= 8.0 else ("High" if avg >= 6.0 else "Medium")
             priority = "P0 - Immediate" if level == "Critical" else "P1 - Current Sprint"
-            lines.append(f"| {t.get('id')} | {t.get('name')} | **{level}** | {avg:.2f} | {priority} |")
+            lines.append(f"| {threat.get('id')} | {threat.get('name')} | **{level}** | {avg:.2f} | {priority} |")
 
         return "\n".join(lines + [""])
 
-    def _generate_footer(self) -> str:
+    def _generate_footer(self, gitleaks_summary: Dict, sbom_summary: Dict) -> str:
+        secret_findings = int((gitleaks_summary or {}).get("findings_count", 0))
+        package_count = int((sbom_summary or {}).get("package_count", 0))
         return "\n".join([
             "---",
-            f"*Report generated automatically by tm-scan engine on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-            "*End of Threat Model Report*"
+            f"*Secret Findings (gitleaks): {secret_findings}*",
+            f"*Total Packages (SBOM): {package_count}*",
+            f"*Report generated automatically by tm-scan v{__version__} on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            "*End of Threat Model Report*",
         ])
+
+    def _average_dread(self, dread: Dict[str, Any]) -> float:
+        values = [
+            self._to_int((dread or {}).get("damage", 0)),
+            self._to_int((dread or {}).get("reproducibility", 0)),
+            self._to_int((dread or {}).get("exploitability", 0)),
+            self._to_int((dread or {}).get("affected_users", 0)),
+            self._to_int((dread or {}).get("discoverability", 0)),
+        ]
+        return mean(values) if values else 0.0
+
+    def _to_int(self, value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     def generate_sarif(self, repo_name: str, relevant_threats: List[Dict[str, Any]]) -> Dict[str, Any]:
         rules, rule_ids, results = [], set(), []
         for item in relevant_threats:
-            t = item.get("threat", {})
-            rid = str(t.get("compliance", {}).get("cwe_id") or t.get("id", "TM-UNKNOWN"))
+            threat = item.get("threat", {})
+            rid = str(threat.get("compliance", {}).get("cwe_id") or threat.get("id", "TM-UNKNOWN"))
             if rid not in rule_ids:
-                rules.append({"id": rid, "name": t.get("name"), "shortDescription": {"text": t.get("description", "")}})
+                rules.append({
+                    "id": rid,
+                    "name": threat.get("name"),
+                    "shortDescription": {"text": threat.get("description", "")},
+                })
                 rule_ids.add(rid)
-            dread_score = mean([int(v) for v in t.get("dread_score", {}).values()]) if t.get("dread_score") else 0.0
+
+            dread_score = self._average_dread(threat.get("dread_score", {}) or {})
             results.append({
                 "ruleId": rid,
                 "level": "error" if dread_score >= 8.0 else "warning",
-                "message": {"text": t.get("reviewer_message") or t.get("description", "")},
-                "locations": [{"physicalLocation": {"artifactLocation": {"uri": repo_name}}}]
+                "message": {"text": threat.get("reviewer_message") or threat.get("description", "")},
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": repo_name}}}],
             })
+
         return {
             "$schema": "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json",
             "version": "2.1.0",
-            "runs": [{"tool": {"driver": {"name": "tm-scan", "rules": rules}}, "results": results}]
+            "runs": [{"tool": {"driver": {"name": "tm-scan", "rules": rules}}, "results": results}],
         }
 
     def save_report(self, report_content: str, repo_name: str):
         report_dir = self.config.get_repo_report_dir(repo_name)
         report_dir.mkdir(parents=True, exist_ok=True)
         path = report_dir / "threatmodel-report.md"
-        with open(path, "w") as f:
-            f.write(report_content)
+        with open(path, "w") as file:
+            file.write(report_content)
         return path
 
     def save_sarif(self, sarif_content: Dict[str, Any], repo_name: str):
         report_dir = self.config.get_repo_report_dir(repo_name)
         report_dir.mkdir(parents=True, exist_ok=True)
         path = report_dir / "threatmodel-report.sarif"
-        with open(path, "w") as f:
-            json.dump(sarif_content, f, indent=2)
+        with open(path, "w") as file:
+            json.dump(sarif_content, file, indent=2)
         return path
